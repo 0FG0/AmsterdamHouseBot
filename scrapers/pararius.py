@@ -2,21 +2,25 @@ import asyncio
 import logging
 import random
 
-import httpx
 from bs4 import BeautifulSoup
 
 from .base import BaseScraper, Listing
 
 logger = logging.getLogger(__name__)
 
+try:
+    from curl_cffi.requests import AsyncSession as CurlAsyncSession
+    _USE_CURL = True
+except ImportError:
+    import httpx
+    _USE_CURL = False
+    logger.warning("curl_cffi non disponibile, Pararius potrebbe ricevere 403. Installa: pip install curl_cffi")
+
 _HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Cache-Control": "max-age=0",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 
@@ -32,16 +36,25 @@ class ParariusScraper(BaseScraper):
         url = self._build_url()
         listings: list[Listing] = []
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                await asyncio.sleep(random.uniform(1.0, 3.0))
-                resp = await client.get(url, headers=_HEADERS)
-                resp.raise_for_status()
+            await asyncio.sleep(random.uniform(1.0, 3.0))
+            if _USE_CURL:
+                async with CurlAsyncSession(impersonate="chrome124") as session:
+                    resp = await session.get(url, headers=_HEADERS, timeout=30)
+                    resp.raise_for_status()
+                    html = resp.text
+            else:
+                async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                    resp = await client.get(url, headers=_HEADERS)
+                    resp.raise_for_status()
+                    html = resp.text
 
-            soup = BeautifulSoup(resp.text, "lxml")
+            soup = BeautifulSoup(html, "lxml")
             for article in soup.select("li.search-list__item--listing article"):
                 listing = self._parse_article(article)
                 if listing:
                     listings.append(listing)
+
+            logger.info("Pararius: trovati %d annunci grezzi", len(listings))
         except Exception as exc:
             logger.error("Pararius scrape error: %s", exc)
         return listings
@@ -72,7 +85,6 @@ class ParariusScraper(BaseScraper):
                 elif "kamer" in text:
                     rooms = text
 
-            # filter by minimum rooms
             if rooms and self.min_rooms:
                 try:
                     if int(rooms.split()[0]) < self.min_rooms:

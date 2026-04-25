@@ -40,6 +40,7 @@ def create_application() -> Application:
     app.add_handler(CommandHandler("pausa", cmd_pausa))
     app.add_handler(CommandHandler("riprendi", cmd_riprendi))
     app.add_handler(CommandHandler("test", cmd_test))
+    app.add_handler(CommandHandler("svuota", cmd_svuota))
 
     cerca_conv = ConversationHandler(
         entry_points=[CommandHandler("cerca", cmd_cerca)],
@@ -213,6 +214,14 @@ async def cmd_pausa(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_riprendi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db.set_active(update.effective_chat.id, True)
     await update.message.reply_text("✅ Notifiche riattivate!")
+
+
+async def cmd_svuota(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await db.clear_seen()
+    await update.message.reply_text(
+        "🗑 Database annunci svuotato.\n"
+        "Al prossimo /test tutti gli annunci saranno considerati nuovi."
+    )
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -90,6 +90,15 @@ async def set_active(chat_id: int, active: bool):
         await db.commit()
 
 
+async def clear_seen(source: str | None = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        if source:
+            await db.execute("DELETE FROM seen_listings WHERE source=?", (source,))
+        else:
+            await db.execute("DELETE FROM seen_listings")
+        await db.commit()
+
+
 async def get_all_active_users() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row

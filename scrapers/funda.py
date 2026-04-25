@@ -18,6 +18,7 @@ _HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "nl-NL,nl;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Referer": "https://www.funda.nl/",
 }
 
@@ -45,34 +46,78 @@ class FundaScraper(BaseScraper):
                 resp.raise_for_status()
 
             soup = BeautifulSoup(resp.text, "lxml")
-
-            # Funda uses Next.js — all data is in __NEXT_DATA__
             script = soup.select_one("script#__NEXT_DATA__")
             if script and script.string:
                 data = json.loads(script.string)
                 listings = self._parse_next_data(data)
             else:
+                logger.warning("Funda: __NEXT_DATA__ non trovato nella pagina, uso fallback HTML")
                 listings = self._parse_html_fallback(soup)
+
+            logger.info("Funda: trovati %d annunci grezzi", len(listings))
         except Exception as exc:
             logger.error("Funda scrape error: %s", exc)
         return listings
 
-    # ------------------------------------------------------------------
     def _parse_next_data(self, data: dict) -> list[Listing]:
         listings: list[Listing] = []
+        page_props = data.get("props", {}).get("pageProps", {})
+
+        # Prova più percorsi noti (Funda aggiorna la struttura frequentemente)
+        candidates = [
+            page_props.get("searchResult", {}).get("results"),
+            page_props.get("initialData", {}).get("searchResult", {}).get("results"),
+            page_props.get("data", {}).get("searchResult", {}).get("results"),
+            page_props.get("searchResultData", {}).get("results"),
+            page_props.get("results"),
+        ]
+
+        results = next((r for r in candidates if r), None)
+
+        if results is None:
+            logger.warning(
+                "Funda: nessun percorso noto trovato in __NEXT_DATA__. "
+                "Chiavi di pageProps: %s",
+                list(page_props.keys())[:20],
+            )
+            listings = self._try_dehydrated_state(data)
+            if not listings:
+                listings = self._parse_html_fallback(
+                    BeautifulSoup("", "lxml")
+                )
+            return listings
+
+        for item in results:
+            listing = self._parse_result_item(item)
+            if listing:
+                listings.append(listing)
+        return listings
+
+    def _try_dehydrated_state(self, data: dict) -> list[Listing]:
+        """Tenta di estrarre annunci da dehydratedState (React Query)."""
+        listings: list[Listing] = []
         try:
-            results = (
+            queries = (
                 data.get("props", {})
                     .get("pageProps", {})
-                    .get("searchResult", {})
-                    .get("results", [])
+                    .get("dehydratedState", {})
+                    .get("queries", [])
             )
-            for item in results:
-                listing = self._parse_result_item(item)
-                if listing:
-                    listings.append(listing)
+            for query in queries:
+                pages = (
+                    query.get("state", {})
+                         .get("data", {})
+                         .get("pages", [])
+                )
+                for page in pages:
+                    for item in page.get("results", []) or page.get("listings", []):
+                        listing = self._parse_result_item(item)
+                        if listing:
+                            listings.append(listing)
+            if listings:
+                logger.info("Funda: trovati %d annunci via dehydratedState", len(listings))
         except Exception as exc:
-            logger.warning("Funda __NEXT_DATA__ parse error: %s", exc)
+            logger.debug("Funda dehydratedState parse error: %s", exc)
         return listings
 
     def _parse_result_item(self, item: dict) -> Listing | None:
