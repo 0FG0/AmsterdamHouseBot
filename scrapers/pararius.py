@@ -1,0 +1,99 @@
+import asyncio
+import logging
+import random
+
+import httpx
+from bs4 import BeautifulSoup
+
+from .base import BaseScraper, Listing
+
+logger = logging.getLogger(__name__)
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+
+class ParariusScraper(BaseScraper):
+    SOURCE = "pararius"
+    BASE_URL = "https://www.pararius.nl"
+
+    def _build_url(self) -> str:
+        price_seg = f"/0-{self.max_price}" if self.max_price else ""
+        return f"{self.BASE_URL}/huurwoningen/amsterdam{price_seg}"
+
+    async def scrape(self) -> list[Listing]:
+        url = self._build_url()
+        listings: list[Listing] = []
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                await asyncio.sleep(random.uniform(1.0, 3.0))
+                resp = await client.get(url, headers=_HEADERS)
+                resp.raise_for_status()
+
+            soup = BeautifulSoup(resp.text, "lxml")
+            for article in soup.select("li.search-list__item--listing article"):
+                listing = self._parse_article(article)
+                if listing:
+                    listings.append(listing)
+        except Exception as exc:
+            logger.error("Pararius scrape error: %s", exc)
+        return listings
+
+    def _parse_article(self, article) -> Listing | None:
+        try:
+            link_tag = article.select_one("a.listing-search-item__link--title")
+            if not link_tag:
+                return None
+
+            relative_url: str = link_tag.get("href", "")
+            full_url = f"{self.BASE_URL}{relative_url}"
+            listing_id = relative_url.strip("/").split("/")[-1]
+
+            title_tag = article.select_one("h2.listing-search-item__title")
+            title = (title_tag or link_tag).get_text(strip=True)
+
+            subtitle_tag = article.select_one("div.listing-search-item__sub-title")
+            address = subtitle_tag.get_text(strip=True) if subtitle_tag else "Amsterdam"
+
+            price, rooms, size_m2 = "", None, None
+            for feat in article.select("li.listing-search-item__feature"):
+                text = feat.get_text(strip=True)
+                if "€" in text or "per maand" in text:
+                    price = text
+                elif "m²" in text:
+                    size_m2 = text
+                elif "kamer" in text:
+                    rooms = text
+
+            # filter by minimum rooms
+            if rooms and self.min_rooms:
+                try:
+                    if int(rooms.split()[0]) < self.min_rooms:
+                        return None
+                except (ValueError, IndexError):
+                    pass
+
+            img = article.select_one("img")
+            image_url = img.get("src") if img else None
+
+            return Listing(
+                id=listing_id,
+                source=self.SOURCE,
+                title=title,
+                price=price,
+                address=address,
+                url=full_url,
+                image_url=image_url,
+                rooms=rooms,
+                size_m2=size_m2,
+            )
+        except Exception as exc:
+            logger.warning("Failed to parse Pararius article: %s", exc)
+            return None
