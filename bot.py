@@ -26,7 +26,7 @@ ASK_PRICE, ASK_ROOMS, ASK_NEIGHBORHOODS = range(3)
 def create_application() -> Application:
     async def _post_init(app: Application) -> None:
         await db.init_db()
-        logger.info("Database inizializzato.")
+        logger.info("Database initialized.")
 
     app = (
         Application.builder()
@@ -68,12 +68,12 @@ def create_application() -> Application:
 
 async def scheduled_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
     users = await db.get_all_active_users()
-    logger.info("Scan programmato: %d utenti attivi.", len(users))
+    logger.info("Scheduled scan: %d active users.", len(users))
     for user in users:
         try:
             await run_scan_for_user(context.bot, user)
         except Exception as exc:
-            logger.error("Errore scan utente %s: %s", user["chat_id"], exc)
+            logger.error("Scan error for user %s: %s", user["chat_id"], exc)
 
 
 # ---------------------------------------------------------------------------
@@ -85,18 +85,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await db.get_filters(chat_id):
         await db.save_filters(chat_id, max_price=2000, min_rooms=1, neighborhoods=[])
 
-    interval_min = config.POLL_INTERVAL_SECONDS // 60
+    interval_sec = config.POLL_INTERVAL_SECONDS
+    interval_str = f"{interval_sec // 60} minutes" if interval_sec >= 60 else f"{interval_sec} seconds"
     await update.message.reply_text(
-        "🏠 *Casa Hunter Amsterdam*\n\n"
-        "Ti avviso appena trovo nuovi annunci di affitto ad Amsterdam\\!\n\n"
-        "*Comandi:*\n"
-        "/cerca — imposta i filtri \\(prezzo, camere, zona\\)\n"
-        "/filtri — mostra i filtri attivi\n"
-        "/test — cerca subito senza aspettare\n"
-        "/pausa — sospendi le notifiche\n"
-        "/riprendi — riprendi le notifiche\n\n"
-        f"Cerco nuovi annunci ogni *{interval_min} minuti* su Pararius e Funda\\.\n"
-        "Usa /cerca per personalizzare la ricerca\\.",
+        "🏠 *Amsterdam House Hunter*\n\n"
+        "I'll notify you as soon as I find new rental listings in Amsterdam\\!\n\n"
+        "*Commands:*\n"
+        "/cerca — set your filters \\(price, rooms, neighbourhood\\)\n"
+        "/filtri — show active filters\n"
+        "/test — search now without waiting\n"
+        "/pausa — pause notifications\n"
+        "/riprendi — resume notifications\n\n"
+        f"I scan for new listings every *{interval_str}* on Pararius and Funda\\.\n"
+        "Use /cerca to customise your search\\.",
         parse_mode="MarkdownV2",
     )
 
@@ -105,30 +106,30 @@ async def cmd_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat_id = update.effective_chat.id
     f = await db.get_filters(chat_id)
     if not f:
-        await update.message.reply_text("Nessun filtro configurato. Usa /cerca.")
+        await update.message.reply_text("No filters configured. Use /cerca.")
         return
 
-    zones = ", ".join(f["neighborhoods"]) if f["neighborhoods"] else "Tutta Amsterdam"
-    stato = "✅ Attivo" if f["active"] else "⏸ In pausa"
-    price_str = f"€{f['max_price']}/mese" if f["max_price"] else "Nessun limite"
+    zones = ", ".join(f["neighborhoods"]) if f["neighborhoods"] else "All Amsterdam"
+    stato = "✅ Active" if f["active"] else "⏸ Paused"
+    price_str = f"€{f['max_price']}/month" if f["max_price"] else "No limit"
 
     await update.message.reply_text(
-        f"*Filtri attivi:*\n\n"
-        f"📍 Zone: {zones}\n"
-        f"💶 Max affitto: {price_str}\n"
-        f"🛏 Camere min: {f['min_rooms']}\n"
-        f"🔔 Stato: {stato}\n\n"
-        "Usa /cerca per modificarli.",
+        f"*Active filters:*\n\n"
+        f"📍 Areas: {zones}\n"
+        f"💶 Max rent: {price_str}\n"
+        f"🛏 Min rooms: {f['min_rooms']}\n"
+        f"🔔 Status: {stato}\n\n"
+        "Use /cerca to update them.",
         parse_mode="Markdown",
     )
 
 
 async def cmd_cerca(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "Configuriamo la ricerca\\!\n\n"
-        "💶 *Affitto massimo al mese \\(€\\)?*\n"
-        "Esempio: `1800` oppure `0` per nessun limite\\.\n\n"
-        "Usa /annulla per uscire\\.",
+        "Let's set up your search\\!\n\n"
+        "💶 *Maximum monthly rent \\(€\\)?*\n"
+        "Example: `1800` or `0` for no limit\\.\n\n"
+        "Use /annulla to cancel\\.",
         parse_mode="MarkdownV2",
     )
     return ASK_PRICE
@@ -141,12 +142,12 @@ async def recv_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             raise ValueError
         context.user_data["max_price"] = price
     except ValueError:
-        await update.message.reply_text("Inserisci un numero intero valido, es. `1500`.", parse_mode="Markdown")
+        await update.message.reply_text("Please enter a valid integer, e.g. `1500`.", parse_mode="Markdown")
         return ASK_PRICE
 
     await update.message.reply_text(
-        "🛏 *Numero minimo di camere?*\n"
-        "Esempio: `1`, `2`, `3`.",
+        "🛏 *Minimum number of rooms?*\n"
+        "Example: `1`, `2`, `3`.",
         parse_mode="Markdown",
     )
     return ASK_ROOMS
@@ -159,14 +160,14 @@ async def recv_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             raise ValueError
         context.user_data["min_rooms"] = rooms
     except ValueError:
-        await update.message.reply_text("Inserisci un numero intero valido, es. `2`.", parse_mode="Markdown")
+        await update.message.reply_text("Please enter a valid integer, e.g. `2`.", parse_mode="Markdown")
         return ASK_ROOMS
 
     await update.message.reply_text(
-        "📍 *Zone di Amsterdam?*\n"
-        "Scrivi i quartieri separati da virgola, es:\n"
+        "📍 *Amsterdam neighbourhoods?*\n"
+        "Enter neighbourhoods separated by commas, e.g.:\n"
         "`Jordaan, De Pijp, Centrum, Oud-West`\n\n"
-        "Oppure scrivi `tutte` per tutta Amsterdam.",
+        "Or type `all` for all of Amsterdam.",
         parse_mode="Markdown",
     )
     return ASK_NEIGHBORHOODS
@@ -185,16 +186,17 @@ async def recv_neighborhoods(update: Update, context: ContextTypes.DEFAULT_TYPE)
     min_rooms: int = context.user_data.get("min_rooms", 1)
     await db.save_filters(chat_id, max_price, min_rooms, neighborhoods, active=True)
 
-    zones_str = ", ".join(neighborhoods) if neighborhoods else "Tutta Amsterdam"
-    price_str = f"€{max_price}/mese" if max_price else "Nessun limite"
-    interval_min = config.POLL_INTERVAL_SECONDS // 60
+    zones_str = ", ".join(neighborhoods) if neighborhoods else "All Amsterdam"
+    price_str = f"€{max_price}/month" if max_price else "No limit"
+    interval_sec = config.POLL_INTERVAL_SECONDS
+    interval_str = f"{interval_sec // 60} minutes" if interval_sec >= 60 else f"{interval_sec} seconds"
 
     await update.message.reply_text(
-        f"✅ *Filtri salvati!*\n\n"
-        f"📍 Zone: {zones_str}\n"
-        f"💶 Max affitto: {price_str}\n"
-        f"🛏 Camere min: {min_rooms}\n\n"
-        f"Cerco nuovi annunci ogni {interval_min} minuti.",
+        f"✅ *Filters saved!*\n\n"
+        f"📍 Areas: {zones_str}\n"
+        f"💶 Max rent: {price_str}\n"
+        f"🛏 Min rooms: {min_rooms}\n\n"
+        f"I'll scan for new listings every {interval_str}.",
         parse_mode="Markdown",
     )
     return ConversationHandler.END
@@ -202,25 +204,25 @@ async def recv_neighborhoods(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cmd_annulla(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text("Operazione annullata.")
+    await update.message.reply_text("Operation cancelled.")
     return ConversationHandler.END
 
 
 async def cmd_pausa(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db.set_active(update.effective_chat.id, False)
-    await update.message.reply_text("⏸ Notifiche sospese. Usa /riprendi per riattivarle.")
+    await update.message.reply_text("⏸ Notifications paused. Use /riprendi to resume.")
 
 
 async def cmd_riprendi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db.set_active(update.effective_chat.id, True)
-    await update.message.reply_text("✅ Notifiche riattivate!")
+    await update.message.reply_text("✅ Notifications resumed!")
 
 
 async def cmd_svuota(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db.clear_seen()
     await update.message.reply_text(
-        "🗑 Database annunci svuotato.\n"
-        "Al prossimo /test tutti gli annunci saranno considerati nuovi."
+        "🗑 Listings database cleared.\n"
+        "The next /test will treat all listings as new."
     )
 
 
@@ -228,12 +230,12 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     f = await db.get_filters(chat_id)
     if not f:
-        await update.message.reply_text("Configura prima i filtri con /cerca.")
+        await update.message.reply_text("Set your filters first with /cerca.")
         return
 
-    await update.message.reply_text("🔍 Cerco annunci adesso...")
+    await update.message.reply_text("🔍 Searching for listings now...")
     count = await run_scan_for_user(context.bot, f)
     if count == 0:
-        await update.message.reply_text("Nessun annuncio nuovo trovato in questo momento.")
+        await update.message.reply_text("No new listings found at the moment.")
     else:
-        await update.message.reply_text(f"✅ Trovati e inviati {count} nuovi annunci!")
+        await update.message.reply_text(f"✅ Found and sent {count} new listings!")

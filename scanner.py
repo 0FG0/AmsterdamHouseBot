@@ -52,7 +52,7 @@ async def run_scan_for_user(bot: Bot, user_filters: dict) -> int:
                 new_count += 1
                 new_from_scraper += 1
             logger.info(
-                "%s: %d annunci trovati, %d nuovi per utente %s",
+                "%s: %d listings found, %d new for user %s",
                 scraper.SOURCE, len(listings), new_from_scraper, chat_id,
             )
         except Exception as exc:
@@ -70,9 +70,9 @@ async def _send_notification(bot: Bot, chat_id: int, listing) -> None:
         parts.append(f"🛏 {listing.rooms}")
     if listing.size_m2:
         parts.append(f"📐 {listing.size_m2}")
-    parts.append(f"\n🔗 [Vedi annuncio]({listing.url})")
+    parts.append(f"\n🔗 [View listing]({listing.url})")
 
-    text = f"{emoji} *Nuovo su {source}!*\n\n" + "\n".join(parts)
+    text = f"{emoji} *New on {source}!*\n\n" + "\n".join(parts)
 
     try:
         if listing.image_url:

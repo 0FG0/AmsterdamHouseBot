@@ -9,5 +9,5 @@ logging.basicConfig(
 
 if __name__ == "__main__":
     app = create_application()
-    print("Bot avviato. Premi Ctrl+C per fermare.")
+    print("Bot started. Press Ctrl+C to stop.")
     app.run_polling(drop_pending_updates=True)
