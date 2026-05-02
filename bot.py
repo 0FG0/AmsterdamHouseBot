@@ -177,7 +177,7 @@ async def recv_neighborhoods(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = update.effective_chat.id
     text = update.message.text.strip()
 
-    if text.lower() in ("tutte", "tutti", "all", "0", ""):
+    if text.lower() in ("all", "0", ""):
         neighborhoods: list[str] = []
     else:
         neighborhoods = [n.strip() for n in text.split(",") if n.strip()]

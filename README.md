@@ -96,7 +96,7 @@ python main.py
 Expected startup message:
 
 ```text
-Bot avviato. Premi Ctrl+C per fermare.
+Bot started. Press Ctrl+C to stop.
 ```
 
 On first boot the bot automatically creates the SQLite database and its tables.
@@ -108,7 +108,7 @@ On first boot the bot automatically creates the SQLite database and its tables.
 3. Send `/search` to configure:
    - max monthly rent
    - minimum rooms
-   - neighborhoods, or `tutte` for all Amsterdam
+   - neighborhoods, or `all` for all Amsterdam
 4. Send `/test` to trigger an immediate scan.
 
 After that, the scheduled scanner will keep running in the background while the process stays alive.
@@ -153,7 +153,7 @@ After that, the scheduled scanner will keep running in the background while the 
 
 ## Troubleshooting
 
-### `TELEGRAM_TOKEN non trovato`
+### `TELEGRAM_TOKEN not found`
 
 Your `.env` file is missing or the token is empty.
 
@@ -165,7 +165,7 @@ Your `.env` file is missing or the token is empty.
 
 ### I want to start fresh
 
-Delete `listings.db`, or use `/svuota` to clear previously seen listings.
+Delete `listings.db`, or use `/clear` to clear previously seen listings.
 
 ## Run Without VS Code
 
