@@ -49,7 +49,7 @@ class ParariusScraper(BaseScraper):
                     html = resp.text
 
             soup = BeautifulSoup(html, "lxml")
-            for article in soup.select("li.search-list__item--listing article"):
+            for article in soup.select("section.listing-search-item"):
                 listing = self._parse_article(article)
                 if listing:
                     listings.append(listing)
@@ -69,18 +69,19 @@ class ParariusScraper(BaseScraper):
             full_url = f"{self.BASE_URL}{relative_url}"
             listing_id = relative_url.strip("/").split("/")[-1]
 
-            title_tag = article.select_one("h2.listing-search-item__title")
+            title_tag = article.select_one(".listing-search-item__title")
             title = (title_tag or link_tag).get_text(strip=True)
 
-            subtitle_tag = article.select_one("div.listing-search-item__sub-title")
+            subtitle_tag = article.select_one(".listing-search-item__sub-title")
             address = subtitle_tag.get_text(strip=True) if subtitle_tag else "Amsterdam"
 
-            price, rooms, size_m2 = "", None, None
-            for feat in article.select("li.listing-search-item__feature"):
+            price_tag = article.select_one(".listing-search-item__price")
+            price = price_tag.get_text(strip=True) if price_tag else ""
+
+            rooms, size_m2 = None, None
+            for feat in article.select(".listing-search-item__features li"):
                 text = feat.get_text(strip=True)
-                if "€" in text or "per maand" in text:
-                    price = text
-                elif "m²" in text:
+                if "m²" in text or "m²" in text:
                     size_m2 = text
                 elif "kamer" in text:
                     rooms = text
