@@ -36,20 +36,20 @@ def create_application() -> Application:
     )
 
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("filtri", cmd_filtri))
-    app.add_handler(CommandHandler("pausa", cmd_pausa))
-    app.add_handler(CommandHandler("riprendi", cmd_riprendi))
+    app.add_handler(CommandHandler("filters", cmd_filtri))
+    app.add_handler(CommandHandler("pause", cmd_pausa))
+    app.add_handler(CommandHandler("resume", cmd_riprendi))
     app.add_handler(CommandHandler("test", cmd_test))
-    app.add_handler(CommandHandler("svuota", cmd_svuota))
+    app.add_handler(CommandHandler("clear", cmd_svuota))
 
     cerca_conv = ConversationHandler(
-        entry_points=[CommandHandler("cerca", cmd_cerca)],
+        entry_points=[CommandHandler("search", cmd_cerca)],
         states={
             ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_price)],
             ASK_ROOMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_rooms)],
             ASK_NEIGHBORHOODS: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_neighborhoods)],
         },
-        fallbacks=[CommandHandler("annulla", cmd_annulla)],
+        fallbacks=[CommandHandler("cancel", cmd_annulla)],
     )
     app.add_handler(cerca_conv)
 
@@ -91,13 +91,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🏠 *Amsterdam House Hunter*\n\n"
         "I'll notify you as soon as I find new rental listings in Amsterdam\\!\n\n"
         "*Commands:*\n"
-        "/cerca — set your filters \\(price, rooms, neighbourhood\\)\n"
-        "/filtri — show active filters\n"
+        "/search — set your filters \\(price, rooms, neighbourhood\\)\n"
+        "/filters — show active filters\n"
         "/test — search now without waiting\n"
-        "/pausa — pause notifications\n"
-        "/riprendi — resume notifications\n\n"
+        "/pause — pause notifications\n"
+        "/resume — resume notifications\n\n"
         f"I scan for new listings every *{interval_str}* on Pararius and Funda\\.\n"
-        "Use /cerca to customise your search\\.",
+        "Use /search to customise your search\\.",
         parse_mode="MarkdownV2",
     )
 
@@ -106,7 +106,7 @@ async def cmd_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat_id = update.effective_chat.id
     f = await db.get_filters(chat_id)
     if not f:
-        await update.message.reply_text("No filters configured. Use /cerca.")
+        await update.message.reply_text("No filters configured. Use /search.")
         return
 
     zones = ", ".join(f["neighborhoods"]) if f["neighborhoods"] else "All Amsterdam"
@@ -119,7 +119,7 @@ async def cmd_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"💶 Max rent: {price_str}\n"
         f"🛏 Min rooms: {f['min_rooms']}\n"
         f"🔔 Status: {stato}\n\n"
-        "Use /cerca to update them.",
+        "Use /search to update them.",
         parse_mode="Markdown",
     )
 
@@ -129,7 +129,7 @@ async def cmd_cerca(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "Let's set up your search\\!\n\n"
         "💶 *Maximum monthly rent \\(€\\)?*\n"
         "Example: `1800` or `0` for no limit\\.\n\n"
-        "Use /annulla to cancel\\.",
+        "Use /cancel to cancel\\.",
         parse_mode="MarkdownV2",
     )
     return ASK_PRICE
@@ -210,7 +210,7 @@ async def cmd_annulla(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cmd_pausa(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db.set_active(update.effective_chat.id, False)
-    await update.message.reply_text("⏸ Notifications paused. Use /riprendi to resume.")
+    await update.message.reply_text("⏸ Notifications paused. Use /resume to resume.")
 
 
 async def cmd_riprendi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -230,7 +230,7 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     f = await db.get_filters(chat_id)
     if not f:
-        await update.message.reply_text("Set your filters first with /cerca.")
+        await update.message.reply_text("Set your filters first with /search.")
         return
 
     await update.message.reply_text("🔍 Searching for listings now...")

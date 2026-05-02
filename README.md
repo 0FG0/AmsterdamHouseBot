@@ -47,29 +47,33 @@ source .venv/bin/activate
 
 ### 3. Install dependencies
 
+With pip:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Create the environment file
-
-Copy `.env.example` to `.env`.
-
-Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-macOS/Linux:
+Or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-cp .env.example .env
+uv sync
 ```
 
-Then edit `.env` and set your Telegram token.
+### 4. Install browser drivers
 
-Example:
+Two scrapers require browser automation. Run these once after installing dependencies:
+
+```bash
+# For Roofz (Playwright)
+playwright install chromium
+
+# For Funda (Camoufox)
+python -m camoufox fetch
+```
+
+### 5. Create the environment file
+
+Create a `.env` file in the project root with the following content:
 
 ```env
 TELEGRAM_TOKEN=123456789:replace-with-your-real-token
@@ -83,7 +87,7 @@ Environment variables:
 - `POLL_INTERVAL_SECONDS`: optional, scan interval in seconds, defaults to `900`
 - `DB_PATH`: optional, SQLite database path, defaults to `listings.db`
 
-### 5. Start the bot
+### 6. Start the bot
 
 ```bash
 python main.py
@@ -101,7 +105,7 @@ On first boot the bot automatically creates the SQLite database and its tables.
 
 1. Open your bot in Telegram.
 2. Send `/start`.
-3. Send `/cerca` to configure:
+3. Send `/search` to configure:
    - max monthly rent
    - minimum rooms
    - neighborhoods, or `tutte` for all Amsterdam
@@ -112,13 +116,13 @@ After that, the scheduled scanner will keep running in the background while the 
 ## Available Commands
 
 - `/start` - initialize the bot and show help
-- `/cerca` - save or update filters
-- `/filtri` - show current filters
+- `/search` - save or update filters
+- `/filters` - show current filters
 - `/test` - run a scan immediately
-- `/pausa` - pause notifications
-- `/riprendi` - resume notifications
-- `/svuota` - clear the seen listings database
-- `/annulla` - cancel the filter setup flow
+- `/pause` - pause notifications
+- `/resume` - resume notifications
+- `/clear` - clear the seen listings database
+- `/cancel` - cancel the filter setup flow
 
 ## How the bot works
 
@@ -135,6 +139,8 @@ After that, the scheduled scanner will keep running in the background while the 
 |-- config.py
 |-- db.py
 |-- main.py
+|-- pyproject.toml
+|-- requirements.txt
 |-- scanner.py
 |-- scrapers/
 |   |-- base.py
@@ -142,7 +148,7 @@ After that, the scheduled scanner will keep running in the background while the 
 |   |-- kamernet.py
 |   |-- pararius.py
 |   `-- roofz.py
-`-- requirements.txt
+`-- uv.lock
 ```
 
 ## Troubleshooting
@@ -153,7 +159,7 @@ Your `.env` file is missing or the token is empty.
 
 ### No listings are being sent
 
-- Make sure you ran `/start` and `/cerca`
+- Make sure you ran `/start` and `/search`
 - Run `/test` to check whether listings are available right now
 - Verify that your price and room filters are not too restrictive
 
