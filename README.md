@@ -79,6 +79,7 @@ Create a `.env` file in the project root with the following content:
 TELEGRAM_TOKEN=123456789:replace-with-your-real-token
 POLL_INTERVAL_SECONDS=300
 DB_PATH=listings.db
+TELEGRAM_ALLOWED_CHAT_IDS=123456789
 ```
 
 Environment variables:
@@ -86,6 +87,7 @@ Environment variables:
 - `TELEGRAM_TOKEN`: required, Telegram bot token from BotFather
 - `POLL_INTERVAL_SECONDS`: optional, scan interval in seconds, defaults to `300`
 - `DB_PATH`: optional, SQLite database path, defaults to `listings.db`
+- `TELEGRAM_ALLOWED_CHAT_IDS`: optional, comma-separated Telegram chat IDs allowed to use the bot. Leave empty for local unrestricted use.
 
 ### 6. Start the bot
 
@@ -180,6 +182,7 @@ This setup assumes:
 - Ubuntu droplet
 - SSH access as `root`
 - Your local `.env` contains a valid `TELEGRAM_TOKEN`
+- Your local `.env` contains `TELEGRAM_ALLOWED_CHAT_IDS` if the VPS bot should be private
 - The VPS should start with a fresh SQLite database
 
 ### Deploy From Windows PowerShell

@@ -59,6 +59,8 @@ def create_application() -> Application:
 
 async def scheduled_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
     users = await db.get_all_active_users()
+    if config.TELEGRAM_ALLOWED_CHAT_IDS:
+        users = [user for user in users if user["chat_id"] in config.TELEGRAM_ALLOWED_CHAT_IDS]
     logger.info("Scheduled scan: %d active users.", len(users))
     for user in users:
         try:
@@ -68,6 +70,9 @@ async def scheduled_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _ensure_authorized(update):
+        return
+
     chat_id = update.effective_chat.id
     if not await db.get_filters(chat_id):
         await db.save_filters(
@@ -92,6 +97,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_filters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _ensure_authorized(update):
+        return
+
     user_filters = await db.get_filters(update.effective_chat.id)
     if not user_filters:
         await update.message.reply_text("No filters configured. Use /search.")
@@ -101,6 +109,9 @@ async def cmd_filters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not await _ensure_authorized(update):
+        return ConversationHandler.END
+
     context.user_data.clear()
     await update.message.reply_text(
         "Maximum monthly rent in EUR?\n"
@@ -111,6 +122,9 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not await _ensure_authorized(update):
+        return ConversationHandler.END
+
     price = _parse_non_negative_int(update.message.text)
     if price is None:
         await update.message.reply_text("Please send a valid number, for example 1500.")
@@ -125,6 +139,9 @@ async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def receive_bedrooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not await _ensure_authorized(update):
+        return ConversationHandler.END
+
     bedrooms = _parse_non_negative_int(update.message.text)
     if bedrooms is None:
         await update.message.reply_text("Please send a valid number, for example 2.")
@@ -139,6 +156,9 @@ async def receive_bedrooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def receive_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not await _ensure_authorized(update):
+        return ConversationHandler.END
+
     min_size_m2 = _parse_non_negative_int(update.message.text)
     if min_size_m2 is None:
         await update.message.reply_text("Please send a valid number, for example 45.")
@@ -161,22 +181,34 @@ async def receive_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not await _ensure_authorized(update):
+        return ConversationHandler.END
+
     context.user_data.clear()
     await update.message.reply_text("Search setup cancelled.")
     return ConversationHandler.END
 
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _ensure_authorized(update):
+        return
+
     await db.set_active(update.effective_chat.id, False)
     await update.message.reply_text("Notifications paused. Use /resume to resume.")
 
 
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _ensure_authorized(update):
+        return
+
     await db.set_active(update.effective_chat.id, True)
     await update.message.reply_text("Notifications resumed.")
 
 
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _ensure_authorized(update):
+        return
+
     await db.clear_seen()
     await update.message.reply_text(
         "Seen and sent listings were cleared. The next scan will treat matching listings as new."
@@ -184,6 +216,9 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _ensure_authorized(update):
+        return
+
     chat_id = update.effective_chat.id
     user_filters = await db.get_filters(chat_id)
     if not user_filters:
@@ -196,6 +231,28 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("No new matching listings found at the moment.")
     else:
         await update.message.reply_text(f"Sent {count} new matching listings.")
+
+
+def _is_authorized(update: Update) -> bool:
+    if not config.TELEGRAM_ALLOWED_CHAT_IDS:
+        return True
+    if not update.effective_chat:
+        return False
+    return update.effective_chat.id in config.TELEGRAM_ALLOWED_CHAT_IDS
+
+
+async def _ensure_authorized(update: Update) -> bool:
+    if _is_authorized(update):
+        return True
+
+    chat_id = update.effective_chat.id if update.effective_chat else "unknown"
+    logger.warning("Unauthorized Telegram chat attempted to use the bot: %s", chat_id)
+    if update.message:
+        await update.message.reply_text(
+            "This is a private bot.\n"
+            f"Your chat ID is {chat_id}."
+        )
+    return False
 
 
 def _parse_non_negative_int(text: str | None) -> int | None:
