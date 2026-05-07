@@ -1,12 +1,11 @@
 import asyncio
 import logging
 import random
-import re
 from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 
-from .base import BaseScraper, Listing
+from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
 
 logger = logging.getLogger(__name__)
 
@@ -16,91 +15,74 @@ class FundaScraper(BaseScraper):
     BASE_URL = "https://www.funda.nl"
 
     def _build_url(self) -> str:
-        area = quote('["amsterdam"]')
-        url = f"{self.BASE_URL}/zoeken/huur?selected_area={area}"
+        city = self.city.lower().replace(" ", "-")
+        selected_area = quote(f'["{city}"]')
+        url = f"{self.BASE_URL}/zoeken/huur?selected_area={selected_area}"
         if self.max_price:
             url += f"&price=0-{self.max_price}"
-        if self.min_rooms:
-            url += f"&rooms={self.min_rooms}-"
+        if self.min_bedrooms:
+            url += f"&rooms={self.min_bedrooms}-"
         return url
 
     async def scrape(self) -> list[Listing]:
         try:
             from camoufox.async_api import AsyncCamoufox
         except ImportError:
-            logger.error("Funda: camoufox non installato. Esegui: pip install camoufox && python -m camoufox fetch")
+            logger.error("Funda: camoufox is not installed. Run: python -m camoufox fetch")
             return []
 
-        listings: list[Listing] = []
-        await asyncio.sleep(random.uniform(1.0, 3.0))
         try:
+            await asyncio.sleep(random.uniform(1.0, 3.0))
             async with AsyncCamoufox(headless=True, locale=("nl-NL",)) as browser:
                 page = await browser.new_page()
                 await page.goto(self._build_url(), wait_until="networkidle", timeout=30000)
                 html = await page.content()
 
             soup = BeautifulSoup(html, "lxml")
-            addr_tags = soup.find_all(attrs={"data-testid": "listingDetailsAddress"})
-            logger.info("Funda: %d listing trovati", len(addr_tags))
-
-            for addr_tag in addr_tags:
-                listing = self._parse_card(addr_tag)
-                if listing:
-                    listings.append(listing)
+            listings = [
+                listing
+                for address_link in soup.find_all(attrs={"data-testid": "listingDetailsAddress"})
+                if (listing := self._parse_card(address_link)) and self._matches_filters(listing)
+            ]
+            logger.info("Funda: found %d matching listings", len(listings))
+            return listings
         except Exception as exc:
             logger.error("Funda scrape error: %s", exc)
+            return []
 
-        return listings
-
-    def _parse_card(self, addr_tag) -> Listing | None:
+    def _parse_card(self, address_link) -> Listing | None:
         try:
-            href = addr_tag.get("href", "")
+            href = address_link.get("href", "")
             if not href:
                 return None
-            listing_id = href.strip("/").split("/")[-1]
-            full_url = f"{self.BASE_URL}{href}"
-            address = addr_tag.get_text(" ", strip=True)
 
-            # Container immediato: h2.parent contiene prezzo e features
-            card = addr_tag.parent.parent  # div con price+features
+            full_url = f"{self.BASE_URL}{href}" if href.startswith("/") else href
+            listing_id = href.strip("/").split("/")[-1]
+            address = address_link.get_text(" ", strip=True)
+            card = address_link.find_parent("div")
+            card_root = card.find_parent("div") if card else None
+            search_root = card_root or card or address_link
 
             price = ""
-            for el in card.select("div.font-semibold, b"):
-                txt = el.get_text(strip=True)
-                if "maand" in txt or "€" in txt or "�" in txt:
-                    price = txt
+            for element in search_root.select("div.font-semibold, b, span"):
+                text = element.get_text(" ", strip=True)
+                if "maand" in text.lower() or "eur" in text.lower() or "€" in text:
+                    price = text
                     break
 
-            if self.max_price and price:
-                nums = re.findall(r"[\d.]+", price.replace(".", "").replace(",", "."))
-                if nums:
-                    try:
-                        if float(nums[0]) > self.max_price:
-                            return None
-                    except ValueError:
-                        pass
+            rooms, bedrooms, size_label, size_value = None, None, None, None
+            for item in search_root.select("ul li"):
+                text = item.get_text(" ", strip=True).replace("\xa0", " ")
+                lower = text.lower()
+                if "m2" in lower or "m²" in lower:
+                    size_label = text
+                    size_value = parse_first_int(text)
+                elif "kamer" in lower or "slaapkamer" in lower or text.strip().isdigit():
+                    rooms = text if not text.strip().isdigit() else f"{text} kamers"
+                    bedrooms = parse_first_int(text)
 
-            items = [li.get_text(strip=True) for li in card.select("ul li")]
-            rooms, size_m2 = None, None
-            for item in items:
-                item_clean = item.replace("\xa0", " ").strip()
-                if re.search(r"\d+\s*m", item_clean):
-                    size_m2 = item_clean
-                elif re.match(r"^\d+$", item_clean):
-                    if not rooms:
-                        rooms = f"{item_clean} kamers"
-
-            if rooms and self.min_rooms:
-                try:
-                    if int(rooms.split()[0]) < self.min_rooms:
-                        return None
-                except (ValueError, IndexError):
-                    pass
-
-            # Immagine: risali un livello in più
-            card_root = addr_tag.parent.parent.parent
-            img = card_root.select_one("img[src*='funda']") or card_root.select_one("img")
-            image_url = img.get("src") if img else None
+            image = search_root.select_one("img[src*='funda']") or search_root.select_one("img")
+            image_url = image.get("src") if image else None
 
             return Listing(
                 id=listing_id,
@@ -111,7 +93,10 @@ class FundaScraper(BaseScraper):
                 url=full_url,
                 image_url=image_url,
                 rooms=rooms,
-                size_m2=size_m2,
+                size_m2=size_label,
+                price_eur=parse_euro_amount(price),
+                bedrooms=bedrooms,
+                size_m2_value=size_value,
             )
         except Exception as exc:
             logger.warning("Funda card parse error: %s", exc)

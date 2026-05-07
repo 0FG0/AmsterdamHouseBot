@@ -14,7 +14,7 @@ The bot stores user filters and already-seen listings in SQLite, so duplicate li
 ## What it does
 
 - Runs a scheduled scan every `POLL_INTERVAL_SECONDS` seconds
-- Lets each Telegram user save their own price, room, and neighborhood filters
+- Lets each Telegram user save their own rent, bedroom/room, and surface-area filters
 - Sends new listings directly in Telegram
 - Supports an on-demand scan with `/test`
 
@@ -77,14 +77,14 @@ Create a `.env` file in the project root with the following content:
 
 ```env
 TELEGRAM_TOKEN=123456789:replace-with-your-real-token
-POLL_INTERVAL_SECONDS=900
+POLL_INTERVAL_SECONDS=300
 DB_PATH=listings.db
 ```
 
 Environment variables:
 
 - `TELEGRAM_TOKEN`: required, Telegram bot token from BotFather
-- `POLL_INTERVAL_SECONDS`: optional, scan interval in seconds, defaults to `900`
+- `POLL_INTERVAL_SECONDS`: optional, scan interval in seconds, defaults to `300`
 - `DB_PATH`: optional, SQLite database path, defaults to `listings.db`
 
 ### 6. Start the bot
@@ -107,8 +107,8 @@ On first boot the bot automatically creates the SQLite database and its tables.
 2. Send `/start`.
 3. Send `/search` to configure:
    - max monthly rent
-   - minimum rooms
-   - neighborhoods, or `all` for all Amsterdam
+   - minimum bedrooms/rooms
+   - minimum surface area in square meters
 4. Send `/test` to trigger an immediate scan.
 
 After that, the scheduled scanner will keep running in the background while the process stays alive.
@@ -161,7 +161,7 @@ Your `.env` file is missing or the token is empty.
 
 - Make sure you ran `/start` and `/search`
 - Run `/test` to check whether listings are available right now
-- Verify that your price and room filters are not too restrictive
+- Verify that your rent, bedroom/room, and size filters are not too restrictive
 
 ### I want to start fresh
 

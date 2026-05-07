@@ -7,7 +7,7 @@ import re
 import httpx
 from bs4 import BeautifulSoup
 
-from .base import BaseScraper, Listing
+from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ _HEADERS = {
 }
 
 # searchCategories: 1=house, 2=room, 4=apartment, 8=studio
-_SEARCH_CATEGORIES = "1,4,8"
+_SEARCH_CATEGORIES = "1,2,4,8"
 
 
 class KamernetScraper(BaseScraper):
@@ -31,56 +31,54 @@ class KamernetScraper(BaseScraper):
     BASE_URL = "https://kamernet.nl"
 
     def _build_url(self) -> str:
+        city_slug = self.city.lower().replace(" ", "-")
         url = (
-            f"{self.BASE_URL}/en/for-rent/properties-amsterdam"
+            f"{self.BASE_URL}/en/for-rent/properties-{city_slug}"
             f"?searchCategories={_SEARCH_CATEGORIES}&pageNo=1"
         )
         if self.max_price:
             url += f"&maxRent={self.max_price}"
+        if self.min_size_m2:
+            url += f"&minSize={self.min_size_m2}"
         return url
 
     async def scrape(self) -> list[Listing]:
-        url = self._build_url()
-        listings: list[Listing] = []
         try:
             async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
                 await asyncio.sleep(random.uniform(2.0, 4.0))
-                resp = await client.get(url, headers=_HEADERS)
-                resp.raise_for_status()
+                response = await client.get(self._build_url(), headers=_HEADERS)
+                response.raise_for_status()
 
-            soup = BeautifulSoup(resp.text, "lxml")
-            script = soup.select_one("script#__NEXT_DATA__")
-            if script and script.string:
-                data = json.loads(script.string)
-                listings = self._parse_next_data(data)
+            soup = BeautifulSoup(response.text, "lxml")
+            listings = []
+            next_data = soup.select_one("script#__NEXT_DATA__")
+            if next_data and next_data.string:
+                listings = self._parse_next_data(json.loads(next_data.string))
             if not listings:
                 listings = self._parse_html_fallback(soup)
+
+            listings = [listing for listing in listings if self._matches_filters(listing)]
+            logger.info("Kamernet: found %d matching listings", len(listings))
+            return listings
         except Exception as exc:
             logger.error("Kamernet scrape error: %s", exc)
-        return listings
+            return []
 
     def _parse_next_data(self, data: dict) -> list[Listing]:
-        listings: list[Listing] = []
-        try:
-            page_props = data.get("props", {}).get("pageProps", {})
-            results = (
-                page_props.get("tiles")
-                or page_props.get("listings")
-                or page_props.get("searchResult", {}).get("results", [])
-                or page_props.get("results")
-                or []
-            )
-            for item in results:
-                listing = self._parse_item(item)
-                if listing:
-                    listings.append(listing)
-        except Exception as exc:
-            logger.warning("Kamernet __NEXT_DATA__ parse error: %s", exc)
+        page_props = data.get("props", {}).get("pageProps", {})
+        results = (
+            page_props.get("tiles")
+            or page_props.get("listings")
+            or page_props.get("searchResult", {}).get("results", [])
+            or page_props.get("results")
+            or []
+        )
+        listings = [listing for item in results if (listing := self._parse_item(item))]
         return listings
 
     def _parse_item(self, item: dict) -> Listing | None:
         try:
-            listing_id = str(item.get("id", ""))
+            listing_id = str(item.get("id") or item.get("listingId") or "")
             if not listing_id:
                 return None
 
@@ -88,29 +86,21 @@ class KamernetScraper(BaseScraper):
                 item.get("url")
                 or item.get("urlKey")
                 or item.get("detailUrl")
-                or f"/en/for-rent/apartment-amsterdam/amsterdam/apartment-{listing_id}"
+                or f"/en/for-rent/apartment-{self.city.lower()}/{self.city.lower()}/apartment-{listing_id}"
             )
             full_url = f"{self.BASE_URL}{url_path}" if url_path.startswith("/") else url_path
 
-            raw_price = item.get("rentalPrice") or item.get("price") or item.get("rent") or 0
-            price = f"€{int(raw_price):,}/mese" if raw_price else "Prezzo non disponibile"
+            price_value = item.get("rentalPrice") or item.get("price") or item.get("rent")
+            price_eur = int(price_value) if isinstance(price_value, (int, float)) else parse_euro_amount(str(price_value))
+            price = f"EUR {price_eur}/month" if price_eur else "Price unavailable"
 
-            rooms = item.get("roomCount") or item.get("numberOfRooms") or item.get("rooms")
-            if rooms and self.min_rooms and int(rooms) < self.min_rooms:
-                return None
-
-            area = item.get("surfaceArea") or item.get("area") or item.get("surface")
-            street = item.get("street", "")
-            city = item.get("city", "Amsterdam")
-            title = item.get("title") or street or f"Appartamento {listing_id}"
+            bedrooms = _first_present_int(item, "roomCount", "numberOfRooms", "rooms")
+            size_value = _first_present_int(item, "surfaceArea", "area", "surface")
+            street = item.get("street") or item.get("address") or ""
+            city = item.get("city") or self.city
+            title = item.get("title") or street or f"Kamernet listing {listing_id}"
             address = f"{street}, {city}" if street else city
-
-            image_url = (
-                item.get("imageUrl")
-                or item.get("mainImageUrl")
-                or item.get("image")
-                or (item.get("images") or [None])[0]
-            )
+            image_url = _pick_image_url(item)
 
             return Listing(
                 id=listing_id,
@@ -120,8 +110,11 @@ class KamernetScraper(BaseScraper):
                 address=address,
                 url=full_url,
                 image_url=image_url,
-                rooms=str(rooms) if rooms else None,
-                size_m2=f"{area} m²" if area else None,
+                rooms=f"{bedrooms} rooms" if bedrooms else None,
+                size_m2=f"{size_value} m2" if size_value else None,
+                price_eur=price_eur,
+                bedrooms=bedrooms,
+                size_m2_value=size_value,
             )
         except Exception as exc:
             logger.warning("Kamernet item parse error: %s", exc)
@@ -131,32 +124,60 @@ class KamernetScraper(BaseScraper):
         listings: list[Listing] = []
         seen_ids: set[str] = set()
         for link in soup.select("a[href*='/en/for-rent/']"):
-            try:
-                href: str = link.get("href", "")
-                # Only match individual listing pages (end with type-id)
-                m = re.search(r"-(apartment|studio|house|room)-(\d+)$|-(apartment|studio|house|room)(\d+)$", href)
-                if not m:
-                    m = re.search(r"-(\d{5,})$", href)
-                if not m:
-                    continue
-                listing_id = m.group(0).lstrip("-")
-                if listing_id in seen_ids:
-                    continue
-                seen_ids.add(listing_id)
+            href = link.get("href", "")
+            match = re.search(r"-(\d{5,})/?$", href)
+            if not match:
+                continue
 
-                full_url = f"{self.BASE_URL}{href}" if href.startswith("/") else href
-                text = link.get_text(" ", strip=True)
-                price_match = re.search(r"€\s?[\d.,]+", text)
-                price = price_match.group(0) if price_match else ""
+            listing_id = match.group(1)
+            if listing_id in seen_ids:
+                continue
+            seen_ids.add(listing_id)
 
-                listings.append(Listing(
+            full_url = f"{self.BASE_URL}{href}" if href.startswith("/") else href
+            text = link.get_text(" ", strip=True)
+            price_eur = parse_euro_amount(text)
+            size_value = parse_first_int(text.split("m2", 1)[0]) if "m2" in text.lower() else None
+            listings.append(
+                Listing(
                     id=listing_id,
                     source=self.SOURCE,
-                    title=text[:80] or listing_id,
-                    price=price,
-                    address="Amsterdam",
+                    title=text[:80] or f"Kamernet listing {listing_id}",
+                    price=f"EUR {price_eur}/month" if price_eur else "",
+                    address=self.city,
                     url=full_url,
-                ))
-            except Exception:
-                continue
+                    price_eur=price_eur,
+                    size_m2=f"{size_value} m2" if size_value else None,
+                    size_m2_value=size_value,
+                )
+            )
         return listings
+
+
+def _first_present_int(item: dict, *keys: str) -> int | None:
+    for key in keys:
+        value = item.get(key)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                parsed = parse_first_int(str(value))
+                if parsed is not None:
+                    return parsed
+    return None
+
+
+def _pick_image_url(item: dict) -> str | None:
+    image = item.get("imageUrl") or item.get("mainImageUrl") or item.get("image")
+    if isinstance(image, dict):
+        image = image.get("url") or image.get("src")
+    if image:
+        return str(image)
+
+    images = item.get("images") or []
+    if not images:
+        return None
+    first = images[0]
+    if isinstance(first, dict):
+        return first.get("url") or first.get("src")
+    return str(first)

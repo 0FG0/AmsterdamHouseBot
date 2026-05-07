@@ -1,3 +1,4 @@
+from html import escape
 import logging
 
 from telegram import Bot
@@ -11,31 +12,33 @@ from scrapers.roofz import RoofzScraper
 
 logger = logging.getLogger(__name__)
 
-_SOURCE_EMOJI = {"pararius": "🟠", "funda": "🔵", "kamernet": "🟢", "roofz": "🟣"}
-
 
 async def run_scan_for_user(bot: Bot, user_filters: dict) -> int:
     chat_id = user_filters["chat_id"]
     scrapers = [
         ParariusScraper(
+            city=user_filters["city"],
             max_price=user_filters["max_price"],
-            min_rooms=user_filters["min_rooms"],
-            neighborhoods=user_filters.get("neighborhoods", []),
+            min_bedrooms=user_filters["min_bedrooms"],
+            min_size_m2=user_filters["min_size_m2"],
         ),
         FundaScraper(
+            city=user_filters["city"],
             max_price=user_filters["max_price"],
-            min_rooms=user_filters["min_rooms"],
-            neighborhoods=user_filters.get("neighborhoods", []),
+            min_bedrooms=user_filters["min_bedrooms"],
+            min_size_m2=user_filters["min_size_m2"],
         ),
         KamernetScraper(
+            city=user_filters["city"],
             max_price=user_filters["max_price"],
-            min_rooms=user_filters["min_rooms"],
-            neighborhoods=user_filters.get("neighborhoods", []),
+            min_bedrooms=user_filters["min_bedrooms"],
+            min_size_m2=user_filters["min_size_m2"],
         ),
         RoofzScraper(
+            city=user_filters["city"],
             max_price=user_filters["max_price"],
-            min_rooms=user_filters["min_rooms"],
-            neighborhoods=user_filters.get("neighborhoods", []),
+            min_bedrooms=user_filters["min_bedrooms"],
+            min_size_m2=user_filters["min_size_m2"],
         ),
     ]
 
@@ -45,15 +48,19 @@ async def run_scan_for_user(bot: Bot, user_filters: dict) -> int:
             listings = await scraper.scrape()
             new_from_scraper = 0
             for listing in listings:
-                if await db.is_seen(listing.source, listing.id):
+                if await db.was_sent(chat_id, listing.source, listing.id):
                     continue
                 await db.mark_seen(listing.source, listing.id, listing.url, listing.title, listing.price)
                 await _send_notification(bot, chat_id, listing)
+                await db.mark_sent(chat_id, listing.source, listing.id)
                 new_count += 1
                 new_from_scraper += 1
             logger.info(
                 "%s: %d listings found, %d new for user %s",
-                scraper.SOURCE, len(listings), new_from_scraper, chat_id,
+                scraper.SOURCE,
+                len(listings),
+                new_from_scraper,
+                chat_id,
             )
         except Exception as exc:
             logger.error("Scraper %s failed for user %s: %s", scraper.SOURCE, chat_id, exc)
@@ -62,17 +69,19 @@ async def run_scan_for_user(bot: Bot, user_filters: dict) -> int:
 
 
 async def _send_notification(bot: Bot, chat_id: int, listing) -> None:
-    emoji = _SOURCE_EMOJI.get(listing.source, "🏠")
     source = listing.source.capitalize()
-
-    parts = [f"*{listing.title}*", f"📍 {listing.address}", f"💶 {listing.price}"]
+    parts = [
+        f"<b>{escape(listing.title)}</b>",
+        f"Address: {escape(listing.address)}",
+        f"Rent: {escape(listing.price)}",
+    ]
     if listing.rooms:
-        parts.append(f"🛏 {listing.rooms}")
+        parts.append(f"Bedrooms/rooms: {escape(listing.rooms)}")
     if listing.size_m2:
-        parts.append(f"📐 {listing.size_m2}")
-    parts.append(f"\n🔗 [View listing]({listing.url})")
+        parts.append(f"Size: {escape(listing.size_m2)}")
+    parts.append(f'\n<a href="{escape(listing.url)}">View listing</a>')
 
-    text = f"{emoji} *New on {source}!*\n\n" + "\n".join(parts)
+    text = f"<b>New on {escape(source)}</b>\n\n" + "\n".join(parts)
 
     try:
         if listing.image_url:
@@ -80,18 +89,18 @@ async def _send_notification(bot: Bot, chat_id: int, listing) -> None:
                 chat_id=chat_id,
                 photo=listing.image_url,
                 caption=text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
             )
         else:
             await bot.send_message(
                 chat_id=chat_id,
                 text=text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
                 disable_web_page_preview=False,
             )
     except Exception as exc:
         logger.warning("Photo send failed (%s), retrying as text: %s", chat_id, exc)
         try:
-            await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
         except Exception as exc2:
             logger.error("Notification failed for %s: %s", chat_id, exc2)

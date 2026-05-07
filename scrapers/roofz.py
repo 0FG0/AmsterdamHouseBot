@@ -2,112 +2,216 @@ import asyncio
 import logging
 import random
 import re
+from urllib.parse import urlparse
 
-from .base import BaseScraper, Listing
+from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
 
 logger = logging.getLogger(__name__)
 
 
 class RoofzScraper(BaseScraper):
     SOURCE = "roofz"
-    BASE_URL = "https://roofz.eu"
+    BASE_URL = "https://www.roofz.eu"
 
-    def _build_url(self) -> str:
-        return f"{self.BASE_URL}/huur/woningen?filter=location:amsterdam"
+    def _urls(self) -> list[str]:
+        return [
+            f"{self.BASE_URL}/huur/woningen?filter=location:{self.city.lower()}",
+            f"{self.BASE_URL}/huur/woningen",
+            self.BASE_URL,
+        ]
 
     async def scrape(self) -> list[Listing]:
         try:
             from playwright.async_api import async_playwright
         except ImportError:
-            logger.error("Roofz: playwright non installato. Esegui: pip install playwright && playwright install chromium")
+            logger.error("Roofz: playwright is not installed. Run: playwright install chromium")
             return []
 
-        listings: list[Listing] = []
         await asyncio.sleep(random.uniform(1.0, 3.0))
+        listings: list[Listing] = []
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
-                await page.goto(self._build_url(), wait_until="networkidle", timeout=30000)
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                page = await browser.new_page(viewport={"width": 1440, "height": 1200})
 
-                cards = page.locator("[class*='offer-card']:not([class*='__'])")
-                count = await cards.count()
-                logger.info("Roofz: %d card trovate", count)
-
-                seen_slugs: set[str] = set()
-                for i in range(count):
-                    card = cards.nth(i)
-                    listing = await self._parse_card(card)
-                    if listing and listing.id not in seen_slugs:
-                        seen_slugs.add(listing.id)
-                        listings.append(listing)
+                for url in self._urls():
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    await self._settle_page(page)
+                    await self._try_select_city(page)
+                    listings = await self._extract_listings(page)
+                    listings = [listing for listing in listings if self._matches_filters(listing)]
+                    if listings:
+                        break
 
                 await browser.close()
         except Exception as exc:
             logger.error("Roofz scrape error: %s", exc)
+            return []
 
-        logger.info("Roofz: trovati %d annunci grezzi (Amsterdam)", len(listings))
+        logger.info("Roofz: found %d matching listings", len(listings))
         return listings
 
-    async def _parse_card(self, card) -> Listing | None:
+    async def _settle_page(self, page) -> None:
+        for label in ("Accept", "Akkoord", "Allow all", "Alles accepteren"):
+            try:
+                await page.get_by_role("button", name=re.compile(label, re.I)).click(timeout=1200)
+                break
+            except Exception:
+                pass
         try:
-            link_el = card.locator("a.offer-card__content, a[href*='/huur/woningen/']").first
-            href = await link_el.get_attribute("href") or ""
-            if not href:
-                return None
-            slug = href.strip("/").split("/")[-1]
-            full_url = f"{self.BASE_URL}{href}" if href.startswith("/") else href
+            await page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
 
-            title_el = card.locator(".offer-card__title, .property__title").first
-            title = (await title_el.inner_text()).strip() if await title_el.count() > 0 else slug
-
-            address_el = card.locator(".offer-card__text > div").first
-            address = (await address_el.inner_text()).strip() if await address_el.count() > 0 else ""
-
-            price_el = card.locator(".offer-card__text b").first
-            raw_price_text = (await price_el.inner_text()).strip() if await price_el.count() > 0 else ""
-            price = raw_price_text if raw_price_text else "Prezzo non disponibile"
-
-            if self.max_price and raw_price_text:
-                nums = re.findall(r"[\d.]+", raw_price_text.replace(".", "").replace(",", "."))
-                if nums:
-                    try:
-                        if float(nums[0]) > self.max_price:
-                            return None
-                    except ValueError:
-                        pass
-
-            detail_items = await card.locator(".property__details--item").all_inner_texts()
-            rooms, size_m2 = None, None
-            for text in detail_items:
-                text = text.strip()
-                if re.search(r"m[²2]", text):
-                    size_m2 = text
-                elif re.match(r"^\d+$", text):
-                    if not rooms:
-                        rooms = f"{text} kamers"
-
-            if rooms and self.min_rooms:
-                try:
-                    if int(rooms.split()[0]) < self.min_rooms:
-                        return None
-                except (ValueError, IndexError):
-                    pass
-
-            img_el = card.locator("img").first
-            image_url = await img_el.get_attribute("src") if await img_el.count() > 0 else None
-
-            return Listing(
-                id=slug,
-                source=self.SOURCE,
-                title=title,
-                price=price,
-                address=address,
-                url=full_url,
-                image_url=image_url,
-                rooms=rooms,
-                size_m2=size_m2,
+    async def _try_select_city(self, page) -> None:
+        city = self.city.lower()
+        try:
+            await page.evaluate(
+                """
+                async (city) => {
+                    for (const select of document.querySelectorAll("select")) {
+                        const option = [...select.options].find((item) =>
+                            item.textContent.toLowerCase().includes(city)
+                        );
+                        if (!option) continue;
+                        select.value = option.value;
+                        select.dispatchEvent(new Event("input", { bubbles: true }));
+                        select.dispatchEvent(new Event("change", { bubbles: true }));
+                    }
+                }
+                """,
+                city,
             )
-        except Exception as exc:
-            logger.warning("Roofz card parse error: %s", exc)
+            for label in ("Get results", "Search", "Zoeken"):
+                try:
+                    await page.get_by_role("button", name=re.compile(label, re.I)).click(timeout=1200)
+                    await self._settle_page(page)
+                    break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    async def _extract_listings(self, page) -> list[Listing]:
+        rows = await page.evaluate(
+            """
+            () => {
+                const links = [...document.querySelectorAll("a[href]")];
+                return links.map((link) => {
+                    const href = link.href;
+                    const container =
+                        link.closest("article, li, [class*='card'], [class*='offer'], [class*='property']")
+                        || link.parentElement;
+                    return {
+                        href,
+                        linkText: link.textContent || "",
+                        text: container ? container.textContent || "" : link.textContent || "",
+                        image: container?.querySelector("img")?.src || null,
+                    };
+                });
+            }
+            """
+        )
+
+        listings: list[Listing] = []
+        seen: set[str] = set()
+        for row in rows:
+            listing = self._parse_row(row)
+            if not listing or listing.id in seen:
+                continue
+            seen.add(listing.id)
+            listings.append(listing)
+        return listings
+
+    def _parse_row(self, row: dict) -> Listing | None:
+        text = _clean_text(row.get("text") or row.get("linkText") or "")
+        href = row.get("href") or ""
+        city = self.city.lower()
+        parsed_url = urlparse(href)
+        path = parsed_url.path.rstrip("/")
+
+        if city not in text.lower() and city not in href.lower():
             return None
+        if not href or ("roofz.eu" not in href and href.startswith("http")):
+            return None
+        if path == "/huur/woningen" or not path.startswith("/huur/woningen/"):
+            return None
+        if not _looks_like_listing(text, href):
+            return None
+
+        title = _extract_title(text) or href.rstrip("/").split("/")[-1] or "Roofz listing"
+        if title.lower().startswith("from:"):
+            title = href.rstrip("/").split("/")[-1].replace("-", " ").title()
+        listing_id = _listing_id(href, title)
+        price_eur = parse_euro_amount(text)
+        size_value = _extract_size(text)
+        bedrooms = _extract_bedrooms(text)
+
+        return Listing(
+            id=listing_id,
+            source=self.SOURCE,
+            title=title,
+            price=f"EUR {price_eur}/month" if price_eur else "Price unavailable",
+            address=_extract_address(text, self.city),
+            url=href,
+            image_url=row.get("image"),
+            rooms=f"{bedrooms} bedrooms" if bedrooms else None,
+            size_m2=f"{size_value} m2" if size_value else None,
+            price_eur=price_eur,
+            bedrooms=bedrooms,
+            size_m2_value=size_value,
+        )
+
+
+def _clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.replace("\xa0", " ")).strip()
+
+
+def _looks_like_listing(text: str, href: str) -> bool:
+    lower = text.lower()
+    return (
+        "/huur/woningen" in href.lower()
+        or "view apartment" in lower
+        or "rent price" in lower
+        or "p/m" in lower
+        or "m2" in lower
+        or "m²" in lower
+    )
+
+
+def _extract_title(text: str) -> str | None:
+    for marker in ("Available", "Under option", "Available per"):
+        if marker in text:
+            tail = text.split(marker, 1)[1].strip()
+            if tail:
+                return tail.split(" Rent price:", 1)[0].split("€", 1)[0].strip(" -")
+    before_price = re.split(r"€|EUR|Rent price:", text, maxsplit=1, flags=re.I)[0].strip()
+    return before_price[:120] if before_price else None
+
+
+def _extract_address(text: str, city: str) -> str:
+    match = re.search(r"\d{4}\s?[A-Z]{2},?\s+[A-Za-z-]+", text)
+    if match:
+        return match.group(0)
+    return city
+
+
+def _extract_size(text: str) -> int | None:
+    match = re.search(r"(\d+)\s*(?:m2|m²)", text, re.I)
+    return int(match.group(1)) if match else None
+
+
+def _extract_bedrooms(text: str) -> int | None:
+    match = re.search(r"(\d+)\s*bedrooms?", text, re.I)
+    if match:
+        return int(match.group(1))
+
+    size_match = re.search(r"(?:m2|m²)\s+[A-Z+]+\s+(\d+)\b", text)
+    return int(size_match.group(1)) if size_match else None
+
+
+def _listing_id(href: str, title: str) -> str:
+    slug = href.rstrip("/").split("/")[-1]
+    if slug and slug not in {"woningen", "huur"}:
+        return slug
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:80]

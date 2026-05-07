@@ -1,10 +1,6 @@
 import json
-import logging
 import aiosqlite
 from config import DB_PATH
-
-logger = logging.getLogger(__name__)
-
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -20,25 +16,38 @@ async def init_db():
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS sent_listings (
+                chat_id     INTEGER NOT NULL,
+                source      TEXT NOT NULL,
+                listing_id  TEXT NOT NULL,
+                sent_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, source, listing_id)
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS user_filters (
                 chat_id       INTEGER PRIMARY KEY,
+                city          TEXT    DEFAULT 'Amsterdam',
                 max_price     INTEGER DEFAULT 2000,
                 min_rooms     INTEGER DEFAULT 1,
+                min_bedrooms  INTEGER DEFAULT 1,
+                min_size_m2   INTEGER DEFAULT 0,
                 neighborhoods TEXT    DEFAULT '[]',
                 active        INTEGER DEFAULT 1,
                 updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await _ensure_column(db, "user_filters", "city", "TEXT DEFAULT 'Amsterdam'")
+        await _ensure_column(db, "user_filters", "min_bedrooms", "INTEGER DEFAULT 1")
+        await _ensure_column(db, "user_filters", "min_size_m2", "INTEGER DEFAULT 0")
         await db.commit()
 
 
-async def is_seen(source: str, listing_id: str) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT 1 FROM seen_listings WHERE source=? AND listing_id=?",
-            (source, listing_id),
-        ) as cur:
-            return await cur.fetchone() is not None
+async def _ensure_column(db: aiosqlite.Connection, table: str, column: str, definition: str) -> None:
+    async with db.execute(f"PRAGMA table_info({table})") as cur:
+        rows = await cur.fetchall()
+    if column not in {row[1] for row in rows}:
+        await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 async def mark_seen(source: str, listing_id: str, url: str = "", title: str = "", price: str = ""):
@@ -50,18 +59,45 @@ async def mark_seen(source: str, listing_id: str, url: str = "", title: str = ""
         await db.commit()
 
 
-async def save_filters(chat_id: int, max_price: int, min_rooms: int, neighborhoods: list, active: bool = True):
+async def was_sent(chat_id: int, source: str, listing_id: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM sent_listings WHERE chat_id=? AND source=? AND listing_id=?",
+            (chat_id, source, listing_id),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+async def mark_sent(chat_id: int, source: str, listing_id: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO sent_listings (chat_id, source, listing_id) VALUES (?, ?, ?)",
+            (chat_id, source, listing_id),
+        )
+        await db.commit()
+
+
+async def save_filters(
+    chat_id: int,
+    max_price: int,
+    min_bedrooms: int,
+    min_size_m2: int = 0,
+    city: str = "Amsterdam",
+    active: bool = True,
+):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT INTO user_filters (chat_id, max_price, min_rooms, neighborhoods, active)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO user_filters (chat_id, city, max_price, min_rooms, min_bedrooms, min_size_m2, neighborhoods, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
+                city=excluded.city,
                 max_price=excluded.max_price,
                 min_rooms=excluded.min_rooms,
-                neighborhoods=excluded.neighborhoods,
+                min_bedrooms=excluded.min_bedrooms,
+                min_size_m2=excluded.min_size_m2,
                 active=excluded.active,
                 updated_at=CURRENT_TIMESTAMP
-        """, (chat_id, max_price, min_rooms, json.dumps(neighborhoods), int(active)))
+        """, (chat_id, city, max_price, min_bedrooms, min_bedrooms, min_size_m2, json.dumps([]), int(active)))
         await db.commit()
 
 
@@ -72,21 +108,26 @@ async def get_filters(chat_id: int) -> dict | None:
             row = await cur.fetchone()
             if not row:
                 return None
+            min_bedrooms = row["min_bedrooms"] if row["min_bedrooms"] is not None else row["min_rooms"]
             return {
                 "chat_id": row["chat_id"],
+                "city": row["city"] or "Amsterdam",
                 "max_price": row["max_price"],
-                "min_rooms": row["min_rooms"],
-                "neighborhoods": json.loads(row["neighborhoods"]),
+                "min_bedrooms": min_bedrooms,
+                "min_size_m2": row["min_size_m2"] or 0,
                 "active": bool(row["active"]),
             }
 
 
 async def set_active(chat_id: int, active: bool):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE user_filters SET active=? WHERE chat_id=?",
-            (int(active), chat_id),
-        )
+        await db.execute("""
+            INSERT INTO user_filters (chat_id, active)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                active=excluded.active,
+                updated_at=CURRENT_TIMESTAMP
+        """, (chat_id, int(active)))
         await db.commit()
 
 
@@ -94,8 +135,10 @@ async def clear_seen(source: str | None = None):
     async with aiosqlite.connect(DB_PATH) as db:
         if source:
             await db.execute("DELETE FROM seen_listings WHERE source=?", (source,))
+            await db.execute("DELETE FROM sent_listings WHERE source=?", (source,))
         else:
             await db.execute("DELETE FROM seen_listings")
+            await db.execute("DELETE FROM sent_listings")
         await db.commit()
 
 
@@ -107,9 +150,10 @@ async def get_all_active_users() -> list[dict]:
             return [
                 {
                     "chat_id": row["chat_id"],
+                    "city": row["city"] or "Amsterdam",
                     "max_price": row["max_price"],
-                    "min_rooms": row["min_rooms"],
-                    "neighborhoods": json.loads(row["neighborhoods"]),
+                    "min_bedrooms": row["min_bedrooms"] if row["min_bedrooms"] is not None else row["min_rooms"],
+                    "min_size_m2": row["min_size_m2"] or 0,
                     "active": bool(row["active"]),
                 }
                 for row in rows

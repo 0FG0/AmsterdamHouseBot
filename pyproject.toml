@@ -4,4 +4,15 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "python-telegram-bot[job-queue]==21.10",
+    "httpx==0.28.1",
+    "curl_cffi>=0.7.0",
+    "beautifulsoup4==4.12.3",
+    "lxml",
+    "aiosqlite==0.20.0",
+    "python-dotenv==1.0.1",
+    "playwright>=1.40.0",
+    "camoufox[geoip]>=0.4.0",
+    "playwright-stealth>=2.0.0",
+]

@@ -4,17 +4,19 @@ import random
 
 from bs4 import BeautifulSoup
 
-from .base import BaseScraper, Listing
+from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
 
 logger = logging.getLogger(__name__)
 
 try:
     from curl_cffi.requests import AsyncSession as CurlAsyncSession
+
     _USE_CURL = True
 except ImportError:
     import httpx
+
     _USE_CURL = False
-    logger.warning("curl_cffi non disponibile, Pararius potrebbe ricevere 403. Installa: pip install curl_cffi")
+    logger.warning("curl_cffi is not installed; Pararius may return 403 responses.")
 
 _HEADERS = {
     "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -29,35 +31,35 @@ class ParariusScraper(BaseScraper):
     BASE_URL = "https://www.pararius.nl"
 
     def _build_url(self) -> str:
-        price_seg = f"/0-{self.max_price}" if self.max_price else ""
-        return f"{self.BASE_URL}/huurwoningen/amsterdam{price_seg}"
+        city_slug = self.city.lower().replace(" ", "-")
+        price_segment = f"/0-{self.max_price}" if self.max_price else ""
+        return f"{self.BASE_URL}/huurwoningen/{city_slug}{price_segment}"
 
     async def scrape(self) -> list[Listing]:
-        url = self._build_url()
-        listings: list[Listing] = []
         try:
             await asyncio.sleep(random.uniform(1.0, 3.0))
             if _USE_CURL:
                 async with CurlAsyncSession(impersonate="chrome124") as session:
-                    resp = await session.get(url, headers=_HEADERS, timeout=30)
-                    resp.raise_for_status()
-                    html = resp.text
+                    response = await session.get(self._build_url(), headers=_HEADERS, timeout=30)
+                    response.raise_for_status()
+                    html = response.text
             else:
                 async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                    resp = await client.get(url, headers=_HEADERS)
-                    resp.raise_for_status()
-                    html = resp.text
+                    response = await client.get(self._build_url(), headers=_HEADERS)
+                    response.raise_for_status()
+                    html = response.text
 
             soup = BeautifulSoup(html, "lxml")
-            for article in soup.select("section.listing-search-item"):
-                listing = self._parse_article(article)
-                if listing:
-                    listings.append(listing)
-
-            logger.info("Pararius: trovati %d annunci grezzi", len(listings))
+            listings = [
+                listing
+                for article in soup.select("section.listing-search-item")
+                if (listing := self._parse_article(article)) and self._matches_filters(listing)
+            ]
+            logger.info("Pararius: found %d matching listings", len(listings))
+            return listings
         except Exception as exc:
             logger.error("Pararius scrape error: %s", exc)
-        return listings
+            return []
 
     def _parse_article(self, article) -> Listing | None:
         try:
@@ -65,36 +67,32 @@ class ParariusScraper(BaseScraper):
             if not link_tag:
                 return None
 
-            relative_url: str = link_tag.get("href", "")
+            relative_url = link_tag.get("href", "")
             full_url = f"{self.BASE_URL}{relative_url}"
             listing_id = relative_url.strip("/").split("/")[-1]
 
             title_tag = article.select_one(".listing-search-item__title")
-            title = (title_tag or link_tag).get_text(strip=True)
+            title = (title_tag or link_tag).get_text(" ", strip=True)
 
-            subtitle_tag = article.select_one(".listing-search-item__sub-title")
-            address = subtitle_tag.get_text(strip=True) if subtitle_tag else "Amsterdam"
+            address_tag = article.select_one(".listing-search-item__sub-title")
+            address = address_tag.get_text(" ", strip=True) if address_tag else self.city
 
             price_tag = article.select_one(".listing-search-item__price")
-            price = price_tag.get_text(strip=True) if price_tag else ""
+            price = price_tag.get_text(" ", strip=True) if price_tag else ""
 
-            rooms, size_m2 = None, None
-            for feat in article.select(".listing-search-item__features li"):
-                text = feat.get_text(strip=True)
-                if "m²" in text or "m²" in text:
-                    size_m2 = text
-                elif "kamer" in text:
+            rooms, bedrooms, size_label, size_value = None, None, None, None
+            for feature in article.select(".listing-search-item__features li"):
+                text = feature.get_text(" ", strip=True)
+                lower = text.lower()
+                if "m2" in lower or "m²" in lower:
+                    size_label = text
+                    size_value = parse_first_int(text)
+                elif "kamer" in lower or "slaapkamer" in lower:
                     rooms = text
+                    bedrooms = parse_first_int(text)
 
-            if rooms and self.min_rooms:
-                try:
-                    if int(rooms.split()[0]) < self.min_rooms:
-                        return None
-                except (ValueError, IndexError):
-                    pass
-
-            img = article.select_one("img")
-            image_url = img.get("src") if img else None
+            image = article.select_one("img")
+            image_url = image.get("src") if image else None
 
             return Listing(
                 id=listing_id,
@@ -105,7 +103,10 @@ class ParariusScraper(BaseScraper):
                 url=full_url,
                 image_url=image_url,
                 rooms=rooms,
-                size_m2=size_m2,
+                size_m2=size_label,
+                price_eur=parse_euro_amount(price),
+                bedrooms=bedrooms,
+                size_m2_value=size_value,
             )
         except Exception as exc:
             logger.warning("Failed to parse Pararius article: %s", exc)

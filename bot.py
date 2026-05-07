@@ -16,42 +16,37 @@ from scanner import run_scan_for_user
 
 logger = logging.getLogger(__name__)
 
-ASK_PRICE, ASK_ROOMS, ASK_NEIGHBORHOODS = range(3)
+ASK_PRICE, ASK_BEDROOMS, ASK_SIZE = range(3)
+DEFAULT_CITY = "Amsterdam"
+DEFAULT_MAX_PRICE = 2000
+DEFAULT_MIN_BEDROOMS = 1
+DEFAULT_MIN_SIZE_M2 = 0
 
-
-# ---------------------------------------------------------------------------
-# Application factory
-# ---------------------------------------------------------------------------
 
 def create_application() -> Application:
     async def _post_init(app: Application) -> None:
         await db.init_db()
         logger.info("Database initialized.")
 
-    app = (
-        Application.builder()
-        .token(config.TELEGRAM_TOKEN)
-        .post_init(_post_init)
-        .build()
-    )
+    app = Application.builder().token(config.TELEGRAM_TOKEN).post_init(_post_init).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("filters", cmd_filtri))
-    app.add_handler(CommandHandler("pause", cmd_pausa))
-    app.add_handler(CommandHandler("resume", cmd_riprendi))
+    app.add_handler(CommandHandler("filters", cmd_filters))
+    app.add_handler(CommandHandler("pause", cmd_pause))
+    app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("test", cmd_test))
-    app.add_handler(CommandHandler("clear", cmd_svuota))
+    app.add_handler(CommandHandler("clear", cmd_clear))
 
-    cerca_conv = ConversationHandler(
-        entry_points=[CommandHandler("search", cmd_cerca)],
+    search_conversation = ConversationHandler(
+        entry_points=[CommandHandler("search", cmd_search)],
         states={
-            ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_price)],
-            ASK_ROOMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_rooms)],
-            ASK_NEIGHBORHOODS: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_neighborhoods)],
+            ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_price)],
+            ASK_BEDROOMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_bedrooms)],
+            ASK_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_size)],
         },
-        fallbacks=[CommandHandler("cancel", cmd_annulla)],
+        fallbacks=[CommandHandler("cancel", cmd_cancel)],
     )
-    app.add_handler(cerca_conv)
+    app.add_handler(search_conversation)
 
     app.job_queue.run_repeating(
         scheduled_scan,
@@ -61,10 +56,6 @@ def create_application() -> Application:
 
     return app
 
-
-# ---------------------------------------------------------------------------
-# Scheduled job
-# ---------------------------------------------------------------------------
 
 async def scheduled_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
     users = await db.get_all_active_users()
@@ -76,166 +67,166 @@ async def scheduled_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.error("Scan error for user %s: %s", user["chat_id"], exc)
 
 
-# ---------------------------------------------------------------------------
-# Command handlers
-# ---------------------------------------------------------------------------
-
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if not await db.get_filters(chat_id):
-        await db.save_filters(chat_id, max_price=2000, min_rooms=1, neighborhoods=[])
+        await db.save_filters(
+            chat_id,
+            max_price=DEFAULT_MAX_PRICE,
+            min_bedrooms=DEFAULT_MIN_BEDROOMS,
+            min_size_m2=DEFAULT_MIN_SIZE_M2,
+            city=DEFAULT_CITY,
+        )
 
-    interval_sec = config.POLL_INTERVAL_SECONDS
-    interval_str = f"{interval_sec // 60} minutes" if interval_sec >= 60 else f"{interval_sec} seconds"
     await update.message.reply_text(
-        "🏠 *Amsterdam House Hunter*\n\n"
-        "I'll notify you as soon as I find new rental listings in Amsterdam\\!\n\n"
-        "*Commands:*\n"
-        "/search — set your filters \\(price, rooms, neighbourhood\\)\n"
-        "/filters — show active filters\n"
-        "/test — search now without waiting\n"
-        "/pause — pause notifications\n"
-        "/resume — resume notifications\n\n"
-        f"I scan for new listings every *{interval_str}* on Pararius and Funda\\.\n"
-        "Use /search to customise your search\\.",
-        parse_mode="MarkdownV2",
+        "Amsterdam House Bot is running.\n\n"
+        "Commands:\n"
+        "/search - set rent, bedrooms, and size filters\n"
+        "/filters - show active filters\n"
+        "/test - scan now\n"
+        "/pause - pause notifications\n"
+        "/resume - resume notifications\n"
+        "/clear - clear sent/seen listings\n\n"
+        f"I scan every {_format_interval(config.POLL_INTERVAL_SECONDS)}."
     )
 
 
-async def cmd_filtri(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    f = await db.get_filters(chat_id)
-    if not f:
+async def cmd_filters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_filters = await db.get_filters(update.effective_chat.id)
+    if not user_filters:
         await update.message.reply_text("No filters configured. Use /search.")
         return
 
-    zones = ", ".join(f["neighborhoods"]) if f["neighborhoods"] else "All Amsterdam"
-    stato = "✅ Active" if f["active"] else "⏸ Paused"
-    price_str = f"€{f['max_price']}/month" if f["max_price"] else "No limit"
+    await update.message.reply_text(_format_filters(user_filters))
 
+
+async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
     await update.message.reply_text(
-        f"*Active filters:*\n\n"
-        f"📍 Areas: {zones}\n"
-        f"💶 Max rent: {price_str}\n"
-        f"🛏 Min rooms: {f['min_rooms']}\n"
-        f"🔔 Status: {stato}\n\n"
-        "Use /search to update them.",
-        parse_mode="Markdown",
-    )
-
-
-async def cmd_cerca(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "Let's set up your search\\!\n\n"
-        "💶 *Maximum monthly rent \\(€\\)?*\n"
-        "Example: `1800` or `0` for no limit\\.\n\n"
-        "Use /cancel to cancel\\.",
-        parse_mode="MarkdownV2",
+        "Maximum monthly rent in EUR?\n"
+        "Send a number like 1800, or 0 for no limit.\n\n"
+        "Use /cancel to stop."
     )
     return ASK_PRICE
 
 
-async def recv_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        price = int(update.message.text.strip())
-        if price < 0:
-            raise ValueError
-        context.user_data["max_price"] = price
-    except ValueError:
-        await update.message.reply_text("Please enter a valid integer, e.g. `1500`.", parse_mode="Markdown")
+async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    price = _parse_non_negative_int(update.message.text)
+    if price is None:
+        await update.message.reply_text("Please send a valid number, for example 1500.")
         return ASK_PRICE
 
+    context.user_data["max_price"] = price
     await update.message.reply_text(
-        "🛏 *Minimum number of rooms?*\n"
-        "Example: `1`, `2`, `3`.",
-        parse_mode="Markdown",
+        "Minimum bedrooms/rooms?\n"
+        "Send 1, 2, 3, etc. Use 0 if you do not want this filter."
     )
-    return ASK_ROOMS
+    return ASK_BEDROOMS
 
 
-async def recv_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        rooms = int(update.message.text.strip())
-        if rooms < 0:
-            raise ValueError
-        context.user_data["min_rooms"] = rooms
-    except ValueError:
-        await update.message.reply_text("Please enter a valid integer, e.g. `2`.", parse_mode="Markdown")
-        return ASK_ROOMS
+async def receive_bedrooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    bedrooms = _parse_non_negative_int(update.message.text)
+    if bedrooms is None:
+        await update.message.reply_text("Please send a valid number, for example 2.")
+        return ASK_BEDROOMS
 
+    context.user_data["min_bedrooms"] = bedrooms
     await update.message.reply_text(
-        "📍 *Amsterdam neighbourhoods?*\n"
-        "Enter neighbourhoods separated by commas, e.g.:\n"
-        "`Jordaan, De Pijp, Centrum, Oud-West`\n\n"
-        "Or type `all` for all of Amsterdam.",
-        parse_mode="Markdown",
+        "Minimum surface area in square meters?\n"
+        "Send a number like 45, or 0 for no minimum size."
     )
-    return ASK_NEIGHBORHOODS
+    return ASK_SIZE
 
 
-async def recv_neighborhoods(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def receive_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    min_size_m2 = _parse_non_negative_int(update.message.text)
+    if min_size_m2 is None:
+        await update.message.reply_text("Please send a valid number, for example 45.")
+        return ASK_SIZE
+
     chat_id = update.effective_chat.id
-    text = update.message.text.strip()
-
-    if text.lower() in ("all", "0", ""):
-        neighborhoods: list[str] = []
-    else:
-        neighborhoods = [n.strip() for n in text.split(",") if n.strip()]
-
-    max_price: int = context.user_data.get("max_price", 2000)
-    min_rooms: int = context.user_data.get("min_rooms", 1)
-    await db.save_filters(chat_id, max_price, min_rooms, neighborhoods, active=True)
-
-    zones_str = ", ".join(neighborhoods) if neighborhoods else "All Amsterdam"
-    price_str = f"€{max_price}/month" if max_price else "No limit"
-    interval_sec = config.POLL_INTERVAL_SECONDS
-    interval_str = f"{interval_sec // 60} minutes" if interval_sec >= 60 else f"{interval_sec} seconds"
-
-    await update.message.reply_text(
-        f"✅ *Filters saved!*\n\n"
-        f"📍 Areas: {zones_str}\n"
-        f"💶 Max rent: {price_str}\n"
-        f"🛏 Min rooms: {min_rooms}\n\n"
-        f"I'll scan for new listings every {interval_str}.",
-        parse_mode="Markdown",
+    await db.save_filters(
+        chat_id,
+        max_price=context.user_data.get("max_price", DEFAULT_MAX_PRICE),
+        min_bedrooms=context.user_data.get("min_bedrooms", DEFAULT_MIN_BEDROOMS),
+        min_size_m2=min_size_m2,
+        city=DEFAULT_CITY,
+        active=True,
     )
-    return ConversationHandler.END
-
-
-async def cmd_annulla(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text("Operation cancelled.")
+
+    saved_filters = await db.get_filters(chat_id)
+    await update.message.reply_text("Filters saved.\n\n" + _format_filters(saved_filters))
     return ConversationHandler.END
 
 
-async def cmd_pausa(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await update.message.reply_text("Search setup cancelled.")
+    return ConversationHandler.END
+
+
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db.set_active(update.effective_chat.id, False)
-    await update.message.reply_text("⏸ Notifications paused. Use /resume to resume.")
+    await update.message.reply_text("Notifications paused. Use /resume to resume.")
 
 
-async def cmd_riprendi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db.set_active(update.effective_chat.id, True)
-    await update.message.reply_text("✅ Notifications resumed!")
+    await update.message.reply_text("Notifications resumed.")
 
 
-async def cmd_svuota(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db.clear_seen()
     await update.message.reply_text(
-        "🗑 Listings database cleared.\n"
-        "The next /test will treat all listings as new."
+        "Seen and sent listings were cleared. The next scan will treat matching listings as new."
     )
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    f = await db.get_filters(chat_id)
-    if not f:
+    user_filters = await db.get_filters(chat_id)
+    if not user_filters:
         await update.message.reply_text("Set your filters first with /search.")
         return
 
-    await update.message.reply_text("🔍 Searching for listings now...")
-    count = await run_scan_for_user(context.bot, f)
+    await update.message.reply_text("Searching for listings now...")
+    count = await run_scan_for_user(context.bot, user_filters)
     if count == 0:
-        await update.message.reply_text("No new listings found at the moment.")
+        await update.message.reply_text("No new matching listings found at the moment.")
     else:
-        await update.message.reply_text(f"✅ Found and sent {count} new listings!")
+        await update.message.reply_text(f"Sent {count} new matching listings.")
+
+
+def _parse_non_negative_int(text: str | None) -> int | None:
+    if text is None:
+        return None
+    try:
+        value = int(text.strip())
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _format_filters(user_filters: dict) -> str:
+    max_price = user_filters["max_price"]
+    min_size = user_filters["min_size_m2"]
+    price_text = f"EUR {max_price}/month" if max_price else "No limit"
+    bedrooms_text = user_filters["min_bedrooms"] or "No minimum"
+    size_text = f"{min_size} m2" if min_size else "No minimum"
+    status_text = "Active" if user_filters["active"] else "Paused"
+    return (
+        "Active filters:\n"
+        f"City: {user_filters['city']}\n"
+        f"Max rent: {price_text}\n"
+        f"Minimum bedrooms/rooms: {bedrooms_text}\n"
+        f"Minimum size: {size_text}\n"
+        f"Status: {status_text}"
+    )
+
+
+def _format_interval(seconds: int) -> str:
+    if seconds % 60 == 0 and seconds >= 60:
+        minutes = seconds // 60
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    return f"{seconds} second{'s' if seconds != 1 else ''}"
