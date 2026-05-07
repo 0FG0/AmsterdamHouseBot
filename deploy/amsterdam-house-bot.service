@@ -1,0 +1,23 @@
+[Unit]
+Description=Amsterdam House Telegram Bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=amsterdambot
+Group=amsterdambot
+WorkingDirectory=/opt/amsterdam-house-bot
+EnvironmentFile=/etc/amsterdam-house-bot/bot.env
+Environment=DB_PATH=/var/lib/amsterdam-house-bot/listings.db
+Environment=HOME=/home/amsterdambot
+Environment=XDG_CACHE_HOME=/home/amsterdambot/.cache
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/amsterdam-house-bot/.venv/bin/python /opt/amsterdam-house-bot/main.py
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

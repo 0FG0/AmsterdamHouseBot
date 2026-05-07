@@ -170,3 +170,82 @@ Delete `listings.db`, or use `/clear` to clear previously seen listings.
 ## Run Without VS Code
 
 The bot does not depend on VS Code. Any terminal is fine as long as the virtual environment is active and `.env` is configured.
+
+## Run On A DigitalOcean VPS
+
+The bot uses Telegram polling, so the VPS does not need a public web port for the bot. Keep SSH open for deployment and make sure the droplet can make outbound HTTPS requests.
+
+This setup assumes:
+
+- Ubuntu droplet
+- SSH access as `root`
+- Your local `.env` contains a valid `TELEGRAM_TOKEN`
+- The VPS should start with a fresh SQLite database
+
+### Deploy From Windows PowerShell
+
+From the project root:
+
+```powershell
+.\scripts\deploy.ps1 -Host YOUR_DROPLET_IP
+```
+
+If your SSH key is not the default key:
+
+```powershell
+.\scripts\deploy.ps1 -Host YOUR_DROPLET_IP -IdentityFile C:\path\to\key
+```
+
+The deploy script uploads the project to `/opt/amsterdam-house-bot`, uploads `.env` to `/etc/amsterdam-house-bot/bot.env`, creates `/var/lib/amsterdam-house-bot/listings.db` on first boot, installs dependencies, and starts a `systemd` service.
+
+The local `.env`, `.venv`, `.git`, `__pycache__`, and local database files are excluded from the code archive. The `.env` file is uploaded separately as the service environment file.
+
+### Manage The VPS Service
+
+SSH into the droplet:
+
+```bash
+ssh root@YOUR_DROPLET_IP
+```
+
+Check status:
+
+```bash
+systemctl status amsterdam-house-bot
+```
+
+Follow logs:
+
+```bash
+journalctl -u amsterdam-house-bot -f
+```
+
+Restart the bot:
+
+```bash
+systemctl restart amsterdam-house-bot
+```
+
+Stop the bot:
+
+```bash
+systemctl stop amsterdam-house-bot
+```
+
+Show recent logs:
+
+```bash
+journalctl -u amsterdam-house-bot -n 100 --no-pager
+```
+
+### After Deployment
+
+Open Telegram and send:
+
+```text
+/start
+/search
+/test
+```
+
+The bot will continue running after you close your terminal because `systemd` owns the process.
