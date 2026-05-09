@@ -1,6 +1,6 @@
 import logging
 
-from telegram import Update
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -13,14 +13,20 @@ from telegram.ext import (
 import config
 import db
 from scanner import run_scan_for_user
+from scrapers.kamernet import KAMERNET_PROPERTY_TYPE_LABELS
 
 logger = logging.getLogger(__name__)
 
-ASK_PRICE, ASK_BEDROOMS, ASK_SIZE = range(3)
+ASK_PROPERTY_TYPE, ASK_PRICE, ASK_BEDROOMS, ASK_SIZE = range(4)
 DEFAULT_CITY = "Amsterdam"
 DEFAULT_MAX_PRICE = 2000
 DEFAULT_MIN_BEDROOMS = 1
 DEFAULT_MIN_SIZE_M2 = 0
+DEFAULT_KAMERNET_PROPERTY_TYPE = "any"
+KAMERNET_PROPERTY_TYPE_CHOICES = {
+    label: key
+    for key, label in KAMERNET_PROPERTY_TYPE_LABELS.items()
+}
 
 
 def create_application() -> Application:
@@ -40,6 +46,7 @@ def create_application() -> Application:
     search_conversation = ConversationHandler(
         entry_points=[CommandHandler("search", cmd_search)],
         states={
+            ASK_PROPERTY_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_property_type)],
             ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_price)],
             ASK_BEDROOMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_bedrooms)],
             ASK_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_size)],
@@ -81,12 +88,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             min_bedrooms=DEFAULT_MIN_BEDROOMS,
             min_size_m2=DEFAULT_MIN_SIZE_M2,
             city=DEFAULT_CITY,
+            kamernet_property_type=DEFAULT_KAMERNET_PROPERTY_TYPE,
         )
 
     await update.message.reply_text(
         "Amsterdam House Bot is running.\n\n"
         "Commands:\n"
-        "/search - set rent, bedrooms, and size filters\n"
+        "/search - set Kamernet property type, rent, bedrooms, and size filters\n"
         "/filters - show active filters\n"
         "/test - scan now\n"
         "/pause - pause notifications\n"
@@ -113,10 +121,44 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
 
     context.user_data.clear()
+    keyboard = [
+        ["Any property type", "Room"],
+        ["Apartment", "Studio"],
+        ["Anti-squat", "Student Housing"],
+        ["Furnished", "Short Term"],
+        ["Long Term"],
+    ]
+    await update.message.reply_text(
+        "Kamernet property type?\n"
+        "Choose one option.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard,
+            one_time_keyboard=True,
+            resize_keyboard=True,
+            input_field_placeholder="Choose property type",
+        ),
+    )
+    return ASK_PROPERTY_TYPE
+
+
+async def receive_property_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not await _ensure_authorized(update):
+        return ConversationHandler.END
+
+    choice = (update.message.text or "").strip()
+    property_type = KAMERNET_PROPERTY_TYPE_CHOICES.get(choice)
+    if property_type is None:
+        await update.message.reply_text(
+            "Please choose one of the property type options from the menu."
+        )
+        return ASK_PROPERTY_TYPE
+
+    context.user_data["kamernet_property_type"] = property_type
     await update.message.reply_text(
         "Maximum monthly rent in EUR?\n"
         "Send a number like 1800, or 0 for no limit.\n\n"
-        "Use /cancel to stop."
+        "Use /cancel to stop.",
+        reply_markup=ReplyKeyboardRemove(),
     )
     return ASK_PRICE
 
@@ -171,6 +213,10 @@ async def receive_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         min_bedrooms=context.user_data.get("min_bedrooms", DEFAULT_MIN_BEDROOMS),
         min_size_m2=min_size_m2,
         city=DEFAULT_CITY,
+        kamernet_property_type=context.user_data.get(
+            "kamernet_property_type",
+            DEFAULT_KAMERNET_PROPERTY_TYPE,
+        ),
         active=True,
     )
     context.user_data.clear()
@@ -185,7 +231,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
 
     context.user_data.clear()
-    await update.message.reply_text("Search setup cancelled.")
+    await update.message.reply_text("Search setup cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 
@@ -271,10 +317,16 @@ def _format_filters(user_filters: dict) -> str:
     price_text = f"EUR {max_price}/month" if max_price else "No limit"
     bedrooms_text = user_filters["min_bedrooms"] or "No minimum"
     size_text = f"{min_size} m2" if min_size else "No minimum"
+    kamernet_property_type = KAMERNET_PROPERTY_TYPE_LABELS.get(
+        user_filters.get("kamernet_property_type", DEFAULT_KAMERNET_PROPERTY_TYPE),
+        KAMERNET_PROPERTY_TYPE_LABELS[DEFAULT_KAMERNET_PROPERTY_TYPE],
+    )
     status_text = "Active" if user_filters["active"] else "Paused"
     return (
         "Active filters:\n"
         f"City: {user_filters['city']}\n"
+        f"Kamernet property type: {kamernet_property_type}\n"
+        "Kamernet search radius: 5 km\n"
         f"Max rent: {price_text}\n"
         f"Minimum bedrooms/rooms: {bedrooms_text}\n"
         f"Minimum size: {size_text}\n"

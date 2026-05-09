@@ -33,6 +33,7 @@ async def run_scan_for_user(bot: Bot, user_filters: dict) -> int:
             max_price=user_filters["max_price"],
             min_bedrooms=user_filters["min_bedrooms"],
             min_size_m2=user_filters["min_size_m2"],
+            property_type=user_filters.get("kamernet_property_type", "any"),
         ),
         RoofzScraper(
             city=user_filters["city"],

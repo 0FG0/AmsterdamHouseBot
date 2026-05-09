@@ -3,6 +3,7 @@ import json
 import logging
 import random
 import re
+from urllib.parse import urlencode
 
 import httpx
 from bs4 import BeautifulSoup
@@ -22,25 +23,67 @@ _HEADERS = {
     "Referer": "https://kamernet.nl/",
 }
 
-# searchCategories: 1=house, 2=room, 4=apartment, 8=studio
-_SEARCH_CATEGORIES = "1,2,4,8"
+KAMERNET_SEARCH_RADIUS_KM = 5
+KAMERNET_PROPERTY_TYPE_LABELS = {
+    "any": "Any property type",
+    "room": "Room",
+    "apartment": "Apartment",
+    "studio": "Studio",
+    "anti_squat": "Anti-squat",
+    "student_housing": "Student Housing",
+    "furnished": "Furnished",
+    "short_term": "Short Term",
+    "long_term": "Long Term",
+}
+
+_SEARCH_CATEGORIES_BY_PROPERTY_TYPE = {
+    "room": "1",
+    "apartment": "2",
+    "studio": "4",
+    "anti_squat": "8",
+    "student_housing": "16",
+    "furnished": "17",
+    "short_term": "18",
+    "long_term": "19",
+}
+
+_DETAIL_TYPE_BY_LISTING_TYPE = {
+    1: "room",
+    2: "apartment",
+    4: "studio",
+    8: "anti-squat",
+}
 
 
 class KamernetScraper(BaseScraper):
     SOURCE = "kamernet"
     BASE_URL = "https://kamernet.nl"
 
+    def __init__(
+        self,
+        city: str = "Amsterdam",
+        max_price: int = 2000,
+        min_bedrooms: int = 1,
+        min_size_m2: int = 0,
+        property_type: str = "any",
+    ):
+        super().__init__(city, max_price, min_bedrooms, min_size_m2)
+        self.property_type = property_type if property_type in KAMERNET_PROPERTY_TYPE_LABELS else "any"
+
     def _build_url(self) -> str:
         city_slug = self.city.lower().replace(" ", "-")
-        url = (
-            f"{self.BASE_URL}/en/for-rent/properties-{city_slug}"
-            f"?searchCategories={_SEARCH_CATEGORIES}&pageNo=1"
-        )
+        params = {
+            "radius": KAMERNET_SEARCH_RADIUS_KM,
+            "pageNo": 1,
+        }
+        search_categories = _SEARCH_CATEGORIES_BY_PROPERTY_TYPE.get(self.property_type)
+        if search_categories:
+            params["searchCategories"] = search_categories
         if self.max_price:
-            url += f"&maxRent={self.max_price}"
+            params["maxRent"] = self.max_price
         if self.min_size_m2:
-            url += f"&minSize={self.min_size_m2}"
-        return url
+            params["minSize"] = self.min_size_m2
+        return f"{self.BASE_URL}/en/for-rent/properties-{city_slug}?{urlencode(params)}"
 
     async def scrape(self) -> list[Listing]:
         try:
@@ -70,6 +113,7 @@ class KamernetScraper(BaseScraper):
             page_props.get("tiles")
             or page_props.get("listings")
             or page_props.get("searchResult", {}).get("results", [])
+            or page_props.get("targetPageProps", {}).get("findListingsResponse", {}).get("listings")
             or page_props.get("results")
             or []
         )
@@ -86,11 +130,16 @@ class KamernetScraper(BaseScraper):
                 item.get("url")
                 or item.get("urlKey")
                 or item.get("detailUrl")
-                or f"/en/for-rent/apartment-{self.city.lower()}/{self.city.lower()}/apartment-{listing_id}"
+                or _build_detail_url_path(item, self.city, listing_id)
             )
             full_url = f"{self.BASE_URL}{url_path}" if url_path.startswith("/") else url_path
 
-            price_value = item.get("rentalPrice") or item.get("price") or item.get("rent")
+            price_value = (
+                item.get("totalRentalPrice")
+                or item.get("rentalPrice")
+                or item.get("price")
+                or item.get("rent")
+            )
             price_eur = int(price_value) if isinstance(price_value, (int, float)) else parse_euro_amount(str(price_value))
             price = f"EUR {price_eur}/month" if price_eur else "Price unavailable"
 
@@ -168,7 +217,14 @@ def _first_present_int(item: dict, *keys: str) -> int | None:
 
 
 def _pick_image_url(item: dict) -> str | None:
-    image = item.get("imageUrl") or item.get("mainImageUrl") or item.get("image")
+    image = (
+        item.get("imageUrl")
+        or item.get("mainImageUrl")
+        or item.get("resizedFullPreviewImageUrl")
+        or item.get("fullPreviewImageUrl")
+        or item.get("thumbnailUrl")
+        or item.get("image")
+    )
     if isinstance(image, dict):
         image = image.get("url") or image.get("src")
     if image:
@@ -181,3 +237,11 @@ def _pick_image_url(item: dict) -> str | None:
     if isinstance(first, dict):
         return first.get("url") or first.get("src")
     return str(first)
+
+
+def _build_detail_url_path(item: dict, city: str, listing_id: str) -> str:
+    listing_type = _first_present_int(item, "listingType")
+    type_slug = _DETAIL_TYPE_BY_LISTING_TYPE.get(listing_type, "apartment")
+    city_slug = item.get("citySlug") or city.lower().replace(" ", "-")
+    street_slug = item.get("streetSlug") or city_slug
+    return f"/en/for-rent/{type_slug}-{city_slug}/{street_slug}/{type_slug}-{listing_id}"

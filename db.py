@@ -32,6 +32,7 @@ async def init_db():
                 min_rooms     INTEGER DEFAULT 1,
                 min_bedrooms  INTEGER DEFAULT 1,
                 min_size_m2   INTEGER DEFAULT 0,
+                kamernet_property_type TEXT DEFAULT 'any',
                 neighborhoods TEXT    DEFAULT '[]',
                 active        INTEGER DEFAULT 1,
                 updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -40,6 +41,7 @@ async def init_db():
         await _ensure_column(db, "user_filters", "city", "TEXT DEFAULT 'Amsterdam'")
         await _ensure_column(db, "user_filters", "min_bedrooms", "INTEGER DEFAULT 1")
         await _ensure_column(db, "user_filters", "min_size_m2", "INTEGER DEFAULT 0")
+        await _ensure_column(db, "user_filters", "kamernet_property_type", "TEXT DEFAULT 'any'")
         await db.commit()
 
 
@@ -83,21 +85,33 @@ async def save_filters(
     min_bedrooms: int,
     min_size_m2: int = 0,
     city: str = "Amsterdam",
+    kamernet_property_type: str = "any",
     active: bool = True,
 ):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT INTO user_filters (chat_id, city, max_price, min_rooms, min_bedrooms, min_size_m2, neighborhoods, active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO user_filters (chat_id, city, max_price, min_rooms, min_bedrooms, min_size_m2, kamernet_property_type, neighborhoods, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
                 city=excluded.city,
                 max_price=excluded.max_price,
                 min_rooms=excluded.min_rooms,
                 min_bedrooms=excluded.min_bedrooms,
                 min_size_m2=excluded.min_size_m2,
+                kamernet_property_type=excluded.kamernet_property_type,
                 active=excluded.active,
                 updated_at=CURRENT_TIMESTAMP
-        """, (chat_id, city, max_price, min_bedrooms, min_bedrooms, min_size_m2, json.dumps([]), int(active)))
+        """, (
+            chat_id,
+            city,
+            max_price,
+            min_bedrooms,
+            min_bedrooms,
+            min_size_m2,
+            kamernet_property_type,
+            json.dumps([]),
+            int(active),
+        ))
         await db.commit()
 
 
@@ -115,6 +129,7 @@ async def get_filters(chat_id: int) -> dict | None:
                 "max_price": row["max_price"],
                 "min_bedrooms": min_bedrooms,
                 "min_size_m2": row["min_size_m2"] or 0,
+                "kamernet_property_type": row["kamernet_property_type"] or "any",
                 "active": bool(row["active"]),
             }
 
@@ -154,6 +169,7 @@ async def get_all_active_users() -> list[dict]:
                     "max_price": row["max_price"],
                     "min_bedrooms": row["min_bedrooms"] if row["min_bedrooms"] is not None else row["min_rooms"],
                     "min_size_m2": row["min_size_m2"] or 0,
+                    "kamernet_property_type": row["kamernet_property_type"] or "any",
                     "active": bool(row["active"]),
                 }
                 for row in rows
