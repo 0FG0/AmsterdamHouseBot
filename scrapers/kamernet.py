@@ -24,6 +24,7 @@ _HEADERS = {
 }
 
 KAMERNET_SEARCH_RADIUS_KM = 5
+KAMERNET_DEFAULT_SEARCH_CATEGORIES = "1,2,4,8"
 KAMERNET_PROPERTY_TYPE_LABELS = {
     "any": "Any property type",
     "room": "Room",
@@ -76,7 +77,10 @@ class KamernetScraper(BaseScraper):
             "radius": KAMERNET_SEARCH_RADIUS_KM,
             "pageNo": 1,
         }
-        search_categories = _SEARCH_CATEGORIES_BY_PROPERTY_TYPE.get(self.property_type)
+        search_categories = _SEARCH_CATEGORIES_BY_PROPERTY_TYPE.get(
+            self.property_type,
+            KAMERNET_DEFAULT_SEARCH_CATEGORIES,
+        )
         if search_categories:
             params["searchCategories"] = search_categories
         if self.max_price:
@@ -100,8 +104,14 @@ class KamernetScraper(BaseScraper):
             if not listings:
                 listings = self._parse_html_fallback(soup)
 
+            raw_count = len(listings)
             listings = [listing for listing in listings if self._matches_filters(listing)]
-            logger.info("Kamernet: found %d matching listings", len(listings))
+            logger.info(
+                "Kamernet: %d raw listings, %d matching listings from %s",
+                raw_count,
+                len(listings),
+                self._build_url(),
+            )
             return listings
         except Exception as exc:
             logger.error("Kamernet scrape error: %s", exc)
@@ -109,15 +119,15 @@ class KamernetScraper(BaseScraper):
 
     def _parse_next_data(self, data: dict) -> list[Listing]:
         page_props = data.get("props", {}).get("pageProps", {})
-        results = (
-            page_props.get("tiles")
-            or page_props.get("listings")
-            or page_props.get("searchResult", {}).get("results", [])
-            or page_props.get("targetPageProps", {}).get("findListingsResponse", {}).get("listings")
-            or page_props.get("results")
-            or []
-        )
-        listings = [listing for item in results if (listing := self._parse_item(item))]
+        results = _find_listing_items(page_props)
+        listings = []
+        seen_ids: set[str] = set()
+        for item in results:
+            listing = self._parse_item(item)
+            if not listing or listing.id in seen_ids:
+                continue
+            seen_ids.add(listing.id)
+            listings.append(listing)
         return listings
 
     def _parse_item(self, item: dict) -> Listing | None:
@@ -237,6 +247,26 @@ def _pick_image_url(item: dict) -> str | None:
     if isinstance(first, dict):
         return first.get("url") or first.get("src")
     return str(first)
+
+
+def _find_listing_items(page_props: dict) -> list[dict]:
+    legacy_results = (
+        page_props.get("tiles")
+        or page_props.get("listings")
+        or page_props.get("searchResult", {}).get("results", [])
+        or page_props.get("results")
+        or []
+    )
+    if legacy_results:
+        return legacy_results
+
+    response = page_props.get("targetPageProps", {}).get("findListingsResponse", {})
+    results: list[dict] = []
+    for key in ("topAdListings", "listings"):
+        items = response.get(key) or []
+        if isinstance(items, list):
+            results.extend(items)
+    return results
 
 
 def _build_detail_url_path(item: dict, city: str, listing_id: str) -> str:
