@@ -13,7 +13,11 @@ from telegram.ext import (
 import config
 import db
 from scanner import run_scan_for_user
-from scrapers.kamernet import KAMERNET_PROPERTY_TYPE_LABELS
+from scrapers.kamernet import (
+    KAMERNET_PROPERTY_TYPE_LABELS,
+    format_kamernet_property_types,
+    serialize_kamernet_property_types,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,8 @@ DEFAULT_MAX_PRICE = 2000
 DEFAULT_MIN_BEDROOMS = 1
 DEFAULT_MIN_SIZE_M2 = 0
 DEFAULT_KAMERNET_PROPERTY_TYPE = "any"
+KAMERNET_PROPERTY_TYPE_DONE = "Done"
+KAMERNET_PROPERTY_TYPE_CLEAR = "Clear selection"
 KAMERNET_PROPERTY_TYPE_CHOICES = {
     label: key
     for key, label in KAMERNET_PROPERTY_TYPE_LABELS.items()
@@ -83,7 +89,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Amsterdam House Bot is running.\n\n"
         "Commands:\n"
-        "/search - set Kamernet property type, rent, bedrooms, and size filters\n"
+        "/search - set Kamernet property types, rent, bedrooms, and size filters\n"
         "/filters - show active filters\n"
         "/test - scan now\n"
         "/pause - pause notifications\n"
@@ -120,21 +126,15 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if previous_filters:
         await db.set_setup_in_progress(chat_id, True)
 
-    keyboard = [
-        ["Any property type", "Room"],
-        ["Apartment", "Studio"],
-        ["Anti-squat", "Student Housing"],
-        ["Furnished", "Short Term"],
-        ["Long Term"],
-    ]
     await update.message.reply_text(
-        "Kamernet property type?\n"
-        "Choose one option.",
+        "Kamernet property types?\n"
+        "Tap one or more options, then Done.\n"
+        "Choose Any property type to skip this filter.",
         reply_markup=ReplyKeyboardMarkup(
-            keyboard,
-            one_time_keyboard=True,
+            _property_type_keyboard(),
+            one_time_keyboard=False,
             resize_keyboard=True,
-            input_field_placeholder="Choose property type",
+            input_field_placeholder="Choose property types",
         ),
     )
     return ASK_PROPERTY_TYPE
@@ -145,21 +145,56 @@ async def receive_property_type(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
 
     choice = (update.message.text or "").strip()
-    property_type = KAMERNET_PROPERTY_TYPE_CHOICES.get(choice)
-    if property_type is None:
+    if choice == KAMERNET_PROPERTY_TYPE_DONE:
+        selected_types = context.user_data.get("kamernet_property_types", [])
+        context.user_data["kamernet_property_type"] = serialize_kamernet_property_types(
+            selected_types or DEFAULT_KAMERNET_PROPERTY_TYPE
+        )
+        return await _ask_price(update)
+
+    if choice == KAMERNET_PROPERTY_TYPE_CLEAR:
+        context.user_data["kamernet_property_types"] = []
         await update.message.reply_text(
-            "Please choose one of the property type options from the menu."
+            "Selection cleared. Choose property types, or tap Done for Any property type.",
+            reply_markup=ReplyKeyboardMarkup(
+                _property_type_keyboard(),
+                one_time_keyboard=False,
+                resize_keyboard=True,
+                input_field_placeholder="Choose property types",
+            ),
         )
         return ASK_PROPERTY_TYPE
 
-    context.user_data["kamernet_property_type"] = property_type
+    property_types, invalid_choices = _parse_property_type_choices(choice)
+    if invalid_choices:
+        await update.message.reply_text(
+            "Please choose property types from the menu, or type labels separated by commas."
+        )
+        return ASK_PROPERTY_TYPE
+
+    if "any" in property_types:
+        context.user_data["kamernet_property_types"] = []
+        context.user_data["kamernet_property_type"] = DEFAULT_KAMERNET_PROPERTY_TYPE
+        return await _ask_price(update)
+
+    selected_types = list(context.user_data.get("kamernet_property_types", []))
+    for property_type in property_types:
+        if property_type in selected_types:
+            selected_types.remove(property_type)
+        else:
+            selected_types.append(property_type)
+    context.user_data["kamernet_property_types"] = selected_types
+
     await update.message.reply_text(
-        "Maximum monthly rent in EUR?\n"
-        "Send a number like 1800, or 0 for no limit.\n\n"
-        "Use /cancel to stop.",
-        reply_markup=ReplyKeyboardRemove(),
+        _format_property_type_selection(selected_types),
+        reply_markup=ReplyKeyboardMarkup(
+            _property_type_keyboard(),
+            one_time_keyboard=False,
+            resize_keyboard=True,
+            input_field_placeholder="Choose property types",
+        ),
     )
-    return ASK_PRICE
+    return ASK_PROPERTY_TYPE
 
 
 async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -315,15 +350,71 @@ def _parse_non_negative_int(text: str | None) -> int | None:
     return value if value >= 0 else None
 
 
+async def _ask_price(update: Update) -> int:
+    await update.message.reply_text(
+        "Maximum monthly rent in EUR?\n"
+        "Send a number like 1800, or 0 for no limit.\n\n"
+        "Use /cancel to stop.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return ASK_PRICE
+
+
+def _property_type_keyboard() -> list[list[str]]:
+    return [
+        [KAMERNET_PROPERTY_TYPE_DONE, KAMERNET_PROPERTY_TYPE_CLEAR],
+        ["Any property type"],
+        ["Room", "Apartment"],
+        ["Studio", "Anti-squat"],
+        ["Student Housing", "Furnished"],
+        ["Short Term", "Long Term"],
+    ]
+
+
+def _parse_property_type_choices(text: str | None) -> tuple[list[str], list[str]]:
+    if not text:
+        return [], [""]
+
+    label_lookup = {
+        " ".join(label.split()).lower(): key
+        for label, key in KAMERNET_PROPERTY_TYPE_CHOICES.items()
+    }
+    parts = []
+    for value in text.replace(";", ",").replace("\n", ",").split(","):
+        label = " ".join(value.strip().split())
+        if label:
+            parts.append(label)
+
+    property_types: list[str] = []
+    invalid_choices: list[str] = []
+    for label in parts:
+        property_type = label_lookup.get(label.lower())
+        if property_type is None:
+            invalid_choices.append(label)
+        elif property_type not in property_types:
+            property_types.append(property_type)
+
+    return property_types, invalid_choices
+
+
+def _format_property_type_selection(property_types: list[str]) -> str:
+    if not property_types:
+        return "No property types selected. Tap Done for Any property type."
+    selected = format_kamernet_property_types(property_types)
+    return (
+        f"Selected: {selected}\n"
+        "Choose another property type, tap a selected type again to remove it, or tap Done."
+    )
+
+
 def _format_filters(user_filters: dict) -> str:
     max_price = user_filters["max_price"]
     min_size = user_filters["min_size_m2"]
     price_text = f"EUR {max_price}/month" if max_price else "No limit"
     bedrooms_text = user_filters["min_bedrooms"] or "No minimum"
     size_text = f"{min_size} m2" if min_size else "No minimum"
-    kamernet_property_type = KAMERNET_PROPERTY_TYPE_LABELS.get(
+    kamernet_property_type = format_kamernet_property_types(
         user_filters.get("kamernet_property_type", DEFAULT_KAMERNET_PROPERTY_TYPE),
-        KAMERNET_PROPERTY_TYPE_LABELS[DEFAULT_KAMERNET_PROPERTY_TYPE],
     )
     status_text = "Setup in progress"
     if not user_filters.get("setup_in_progress"):
@@ -331,7 +422,7 @@ def _format_filters(user_filters: dict) -> str:
     return (
         "Active filters:\n"
         f"City: {user_filters['city']}\n"
-        f"Kamernet property type: {kamernet_property_type}\n"
+        f"Kamernet property types: {kamernet_property_type}\n"
         "Kamernet search radius: 5 km\n"
         f"Max rent: {price_text}\n"
         f"Minimum bedrooms/rooms: {bedrooms_text}\n"

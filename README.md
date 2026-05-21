@@ -15,7 +15,7 @@ The bot stores user filters and already-seen listings in SQLite, so duplicate li
 ## What it does
 
 - Runs a scheduled scan every `POLL_INTERVAL_SECONDS` seconds
-- Lets each Telegram user save their own Kamernet property type, rent, bedroom/room, and surface-area filters
+- Lets each Telegram user save their own Kamernet property types, rent, bedroom/room, and surface-area filters
 - Sends new listings directly in Telegram
 - Supports an on-demand scan with `/test`
 
@@ -109,7 +109,7 @@ On first boot the bot automatically creates the SQLite database and its tables.
 1. Open your bot in Telegram.
 2. Send `/start`.
 3. Send `/search` to configure:
-   - Kamernet property type
+   - Kamernet property types. Tap one or more types, then tap `Done`.
    - max monthly rent
    - minimum bedrooms/rooms
    - minimum surface area in square meters
@@ -166,7 +166,7 @@ Your `.env` file is missing or the token is empty.
 
 - Make sure you ran `/start` and `/search`
 - Run `/test` to check whether listings are available right now
-- Verify that your Kamernet property type, rent, bedroom/room, and size filters are not too restrictive
+- Verify that your Kamernet property types, rent, bedroom/room, and size filters are not too restrictive
 
 ### I want to start fresh
 

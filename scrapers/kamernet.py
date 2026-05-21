@@ -3,6 +3,7 @@ import json
 import logging
 import random
 import re
+from collections.abc import Iterable
 from urllib.parse import urlencode
 
 import httpx
@@ -66,10 +67,10 @@ class KamernetScraper(BaseScraper):
         max_price: int = 2000,
         min_bedrooms: int = 1,
         min_size_m2: int = 0,
-        property_type: str = "any",
+        property_type: str | Iterable[str] = "any",
     ):
         super().__init__(city, max_price, min_bedrooms, min_size_m2)
-        self.property_type = property_type if property_type in KAMERNET_PROPERTY_TYPE_LABELS else "any"
+        self.property_types = normalize_kamernet_property_types(property_type)
 
     def _build_url(self) -> str:
         city_slug = self.city.lower().replace(" ", "-")
@@ -77,10 +78,7 @@ class KamernetScraper(BaseScraper):
             "radius": KAMERNET_SEARCH_RADIUS_KM,
             "pageNo": 1,
         }
-        search_categories = _SEARCH_CATEGORIES_BY_PROPERTY_TYPE.get(
-            self.property_type,
-            KAMERNET_DEFAULT_SEARCH_CATEGORIES,
-        )
+        search_categories = _search_categories_for_property_types(self.property_types)
         if search_categories:
             params["searchCategories"] = search_categories
         if self.max_price:
@@ -211,6 +209,63 @@ class KamernetScraper(BaseScraper):
                 )
             )
         return listings
+
+
+def normalize_kamernet_property_types(property_types: str | Iterable[str] | None) -> tuple[str, ...]:
+    if property_types is None:
+        return ("any",)
+
+    values: Iterable[str]
+    if isinstance(property_types, str):
+        stripped = property_types.strip()
+        if not stripped:
+            return ("any",)
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+                values = parsed if isinstance(parsed, list) else [stripped]
+            except json.JSONDecodeError:
+                values = [stripped]
+        else:
+            values = re.split(r"[,;\n]+", stripped)
+    else:
+        values = property_types
+
+    normalized: list[str] = []
+    for value in values:
+        key = str(value).strip()
+        if not key:
+            continue
+        if key in KAMERNET_PROPERTY_TYPE_LABELS and key not in normalized:
+            normalized.append(key)
+
+    if not normalized or "any" in normalized:
+        return ("any",)
+    return tuple(normalized)
+
+
+def serialize_kamernet_property_types(property_types: str | Iterable[str] | None) -> str:
+    return ",".join(normalize_kamernet_property_types(property_types))
+
+
+def format_kamernet_property_types(property_types: str | Iterable[str] | None) -> str:
+    return ", ".join(
+        KAMERNET_PROPERTY_TYPE_LABELS[property_type]
+        for property_type in normalize_kamernet_property_types(property_types)
+    )
+
+
+def _search_categories_for_property_types(property_types: str | Iterable[str] | None) -> str:
+    normalized = normalize_kamernet_property_types(property_types)
+    if normalized == ("any",):
+        return KAMERNET_DEFAULT_SEARCH_CATEGORIES
+
+    categories = [
+        _SEARCH_CATEGORIES_BY_PROPERTY_TYPE[property_type]
+        for property_type in normalized
+        if property_type in _SEARCH_CATEGORIES_BY_PROPERTY_TYPE
+    ]
+    return ",".join(categories) or KAMERNET_DEFAULT_SEARCH_CATEGORIES
 
 
 def _first_present_int(item: dict, *keys: str) -> int | None:
