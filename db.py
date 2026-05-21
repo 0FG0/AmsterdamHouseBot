@@ -35,6 +35,7 @@ async def init_db():
                 kamernet_property_type TEXT DEFAULT 'any',
                 neighborhoods TEXT    DEFAULT '[]',
                 active        INTEGER DEFAULT 1,
+                setup_in_progress INTEGER DEFAULT 0,
                 updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -42,6 +43,7 @@ async def init_db():
         await _ensure_column(db, "user_filters", "min_bedrooms", "INTEGER DEFAULT 1")
         await _ensure_column(db, "user_filters", "min_size_m2", "INTEGER DEFAULT 0")
         await _ensure_column(db, "user_filters", "kamernet_property_type", "TEXT DEFAULT 'any'")
+        await _ensure_column(db, "user_filters", "setup_in_progress", "INTEGER DEFAULT 0")
         await db.commit()
 
 
@@ -90,8 +92,8 @@ async def save_filters(
 ):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT INTO user_filters (chat_id, city, max_price, min_rooms, min_bedrooms, min_size_m2, kamernet_property_type, neighborhoods, active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO user_filters (chat_id, city, max_price, min_rooms, min_bedrooms, min_size_m2, kamernet_property_type, neighborhoods, active, setup_in_progress)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             ON CONFLICT(chat_id) DO UPDATE SET
                 city=excluded.city,
                 max_price=excluded.max_price,
@@ -100,6 +102,7 @@ async def save_filters(
                 min_size_m2=excluded.min_size_m2,
                 kamernet_property_type=excluded.kamernet_property_type,
                 active=excluded.active,
+                setup_in_progress=0,
                 updated_at=CURRENT_TIMESTAMP
         """, (
             chat_id,
@@ -131,6 +134,7 @@ async def get_filters(chat_id: int) -> dict | None:
                 "min_size_m2": row["min_size_m2"] or 0,
                 "kamernet_property_type": row["kamernet_property_type"] or "any",
                 "active": bool(row["active"]),
+                "setup_in_progress": bool(row["setup_in_progress"]),
             }
 
 
@@ -143,6 +147,19 @@ async def set_active(chat_id: int, active: bool):
                 active=excluded.active,
                 updated_at=CURRENT_TIMESTAMP
         """, (chat_id, int(active)))
+        await db.commit()
+
+
+async def set_setup_in_progress(chat_id: int, setup_in_progress: bool) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE user_filters
+            SET setup_in_progress=?, updated_at=CURRENT_TIMESTAMP
+            WHERE chat_id=?
+            """,
+            (int(setup_in_progress), chat_id),
+        )
         await db.commit()
 
 
@@ -160,7 +177,9 @@ async def clear_seen(source: str | None = None):
 async def get_all_active_users() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM user_filters WHERE active=1") as cur:
+        async with db.execute(
+            "SELECT * FROM user_filters WHERE active=1 AND setup_in_progress=0"
+        ) as cur:
             rows = await cur.fetchall()
             return [
                 {
@@ -171,6 +190,7 @@ async def get_all_active_users() -> list[dict]:
                     "min_size_m2": row["min_size_m2"] or 0,
                     "kamernet_property_type": row["kamernet_property_type"] or "any",
                     "active": bool(row["active"]),
+                    "setup_in_progress": bool(row["setup_in_progress"]),
                 }
                 for row in rows
             ]

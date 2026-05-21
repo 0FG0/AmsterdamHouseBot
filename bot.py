@@ -80,17 +80,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _ensure_authorized(update):
         return
 
-    chat_id = update.effective_chat.id
-    if not await db.get_filters(chat_id):
-        await db.save_filters(
-            chat_id,
-            max_price=DEFAULT_MAX_PRICE,
-            min_bedrooms=DEFAULT_MIN_BEDROOMS,
-            min_size_m2=DEFAULT_MIN_SIZE_M2,
-            city=DEFAULT_CITY,
-            kamernet_property_type=DEFAULT_KAMERNET_PROPERTY_TYPE,
-        )
-
     await update.message.reply_text(
         "Amsterdam House Bot is running.\n\n"
         "Commands:\n"
@@ -100,6 +89,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/pause - pause notifications\n"
         "/resume - resume notifications\n"
         "/clear - clear sent/seen listings\n\n"
+        "Notifications start after you complete /search.\n"
         f"I scan every {_format_interval(config.POLL_INTERVAL_SECONDS)}."
     )
 
@@ -120,7 +110,16 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not await _ensure_authorized(update):
         return ConversationHandler.END
 
+    chat_id = update.effective_chat.id
+    previous_filters = await db.get_filters(chat_id)
     context.user_data.clear()
+    context.user_data["had_filters"] = previous_filters is not None
+    context.user_data["previous_active"] = (
+        previous_filters["active"] if previous_filters else True
+    )
+    if previous_filters:
+        await db.set_setup_in_progress(chat_id, True)
+
     keyboard = [
         ["Any property type", "Room"],
         ["Apartment", "Studio"],
@@ -217,7 +216,7 @@ async def receive_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             "kamernet_property_type",
             DEFAULT_KAMERNET_PROPERTY_TYPE,
         ),
-        active=True,
+        active=context.user_data.get("previous_active", True),
     )
     context.user_data.clear()
 
@@ -230,6 +229,8 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not await _ensure_authorized(update):
         return ConversationHandler.END
 
+    if context.user_data.get("had_filters"):
+        await db.set_setup_in_progress(update.effective_chat.id, False)
     context.user_data.clear()
     await update.message.reply_text("Search setup cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
@@ -270,9 +271,12 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user_filters:
         await update.message.reply_text("Set your filters first with /search.")
         return
+    if user_filters.get("setup_in_progress"):
+        await update.message.reply_text("Finish or cancel /search before running a test scan.")
+        return
 
     await update.message.reply_text("Searching for listings now...")
-    count = await run_scan_for_user(context.bot, user_filters)
+    count = await run_scan_for_user(context.bot, user_filters, require_active=False)
     if count == 0:
         await update.message.reply_text("No new matching listings found at the moment.")
     else:
@@ -321,7 +325,9 @@ def _format_filters(user_filters: dict) -> str:
         user_filters.get("kamernet_property_type", DEFAULT_KAMERNET_PROPERTY_TYPE),
         KAMERNET_PROPERTY_TYPE_LABELS[DEFAULT_KAMERNET_PROPERTY_TYPE],
     )
-    status_text = "Active" if user_filters["active"] else "Paused"
+    status_text = "Setup in progress"
+    if not user_filters.get("setup_in_progress"):
+        status_text = "Active" if user_filters["active"] else "Paused"
     return (
         "Active filters:\n"
         f"City: {user_filters['city']}\n"

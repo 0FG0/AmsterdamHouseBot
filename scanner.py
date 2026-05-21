@@ -14,7 +14,16 @@ from scrapers.roofz import RoofzScraper
 logger = logging.getLogger(__name__)
 
 
-async def run_scan_for_user(bot: Bot, user_filters: dict) -> int:
+_FILTER_MATCH_KEYS = (
+    "city",
+    "max_price",
+    "min_bedrooms",
+    "min_size_m2",
+    "kamernet_property_type",
+)
+
+
+async def run_scan_for_user(bot: Bot, user_filters: dict, require_active: bool = True) -> int:
     chat_id = user_filters["chat_id"]
     scrapers = [
         ParariusScraper(
@@ -53,9 +62,17 @@ async def run_scan_for_user(bot: Bot, user_filters: dict) -> int:
     new_count = 0
     for scraper in scrapers:
         try:
+            if not await _scan_is_current(chat_id, user_filters, require_active):
+                logger.info("Scan stopped for user %s because filters changed or setup is open.", chat_id)
+                return new_count
+
             listings = await scraper.scrape()
             new_from_scraper = 0
             for listing in listings:
+                if not await _scan_is_current(chat_id, user_filters, require_active):
+                    logger.info("Scan stopped for user %s before sending stale results.", chat_id)
+                    return new_count
+
                 if await db.was_sent(chat_id, listing.source, listing.id):
                     continue
                 await db.mark_seen(listing.source, listing.id, listing.url, listing.title, listing.price)
@@ -74,6 +91,18 @@ async def run_scan_for_user(bot: Bot, user_filters: dict) -> int:
             logger.error("Scraper %s failed for user %s: %s", scraper.SOURCE, chat_id, exc)
 
     return new_count
+
+
+async def _scan_is_current(chat_id: int, user_filters: dict, require_active: bool) -> bool:
+    latest_filters = await db.get_filters(chat_id)
+    if not latest_filters or latest_filters.get("setup_in_progress"):
+        return False
+    if require_active and not latest_filters["active"]:
+        return False
+    return all(
+        latest_filters.get(key) == user_filters.get(key)
+        for key in _FILTER_MATCH_KEYS
+    )
 
 
 async def _send_notification(bot: Bot, chat_id: int, listing) -> None:
