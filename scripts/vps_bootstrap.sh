@@ -10,6 +10,7 @@ ENV_DIR="/etc/${APP_NAME}"
 ENV_FILE="${ENV_DIR}/bot.env"
 DATA_DIR="/var/lib/${APP_NAME}"
 DB_PATH="${DATA_DIR}/listings.db"
+LEGACY_DB_PATH="${APP_DIR}/listings.db"
 UV_BIN="/usr/local/bin/uv"
 SERVICE_ENV=("HOME=${SERVICE_HOME}" "XDG_CACHE_HOME=${SERVICE_HOME}/.cache")
 
@@ -71,12 +72,20 @@ install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0755 "${APP_DIR}"
 if systemctl list-unit-files "${SERVICE_NAME}" >/dev/null 2>&1; then
     systemctl stop "${SERVICE_NAME}" || true
 fi
+install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0750 "${DATA_DIR}"
+if [[ -f "${LEGACY_DB_PATH}" && ! -f "${DB_PATH}" ]]; then
+    log "Migrating legacy app-local database to ${DB_PATH}"
+    install -m 0640 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${LEGACY_DB_PATH}" "${DB_PATH}"
+fi
 rsync -a --delete --exclude ".venv/" "${STAGING_DIR}/" "${APP_DIR}/"
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}"
 
 log "Installing environment and data directories"
 install -d -o root -g "${SERVICE_USER}" -m 0750 "${ENV_DIR}"
-install -m 0640 -o root -g "${SERVICE_USER}" "${UPLOADED_ENV}" "${ENV_FILE}"
+SANITIZED_ENV="$(mktemp)"
+awk '!/^[[:space:]]*DB_PATH[[:space:]]*=/' "${UPLOADED_ENV}" > "${SANITIZED_ENV}"
+install -m 0640 -o root -g "${SERVICE_USER}" "${SANITIZED_ENV}" "${ENV_FILE}"
+rm -f "${SANITIZED_ENV}"
 install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0750 "${DATA_DIR}"
 install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0750 "${SERVICE_HOME}/.cache"
 
