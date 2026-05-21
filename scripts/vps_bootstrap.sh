@@ -12,6 +12,9 @@ DATA_DIR="/var/lib/${APP_NAME}"
 DB_PATH="${DATA_DIR}/listings.db"
 LEGACY_DB_PATH="${APP_DIR}/listings.db"
 UV_BIN="/usr/local/bin/uv"
+UVX_BIN="/usr/local/bin/uvx"
+UV_VERSION="0.8.15"
+PYTHON_VERSION="3.13.7"
 SERVICE_ENV=("HOME=${SERVICE_HOME}" "XDG_CACHE_HOME=${SERVICE_HOME}/.cache")
 
 ARCHIVE_PATH="${1:-}"
@@ -20,6 +23,37 @@ STAGING_DIR="/tmp/${APP_NAME}-release"
 
 log() {
     printf '\n[%s] %s\n' "$APP_NAME" "$*"
+}
+
+install_uv() {
+    local arch target checksum archive_url tmp_dir archive_path
+
+    arch="$(uname -m)"
+    case "${arch}" in
+        x86_64|amd64)
+            target="uv-x86_64-unknown-linux-gnu"
+            checksum="be9878e9d08ebcb621a683aba52e7fb8bbf92b2532e0d759026ffcc067673042"
+            ;;
+        aarch64|arm64)
+            target="uv-aarch64-unknown-linux-gnu"
+            checksum="6ede0fefa7db7be3d5d9eda8784a8e43b1cf5410720eb3da60ab1d2f66678e82"
+            ;;
+        *)
+            echo "Unsupported architecture for pinned uv install: ${arch}" >&2
+            exit 1
+            ;;
+    esac
+
+    archive_url="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${target}.tar.gz"
+    tmp_dir="$(mktemp -d)"
+    archive_path="${tmp_dir}/${target}.tar.gz"
+
+    curl -fL "${archive_url}" -o "${archive_path}"
+    printf '%s  %s\n' "${checksum}" "${archive_path}" | sha256sum -c -
+    tar -xzf "${archive_path}" -C "${tmp_dir}"
+    install -m 0755 "${tmp_dir}/${target}/uv" "${UV_BIN}"
+    install -m 0755 "${tmp_dir}/${target}/uvx" "${UVX_BIN}"
+    rm -rf "${tmp_dir}"
 }
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -43,13 +77,11 @@ log "Installing base system packages"
 apt-get update
 apt-get install -y ca-certificates curl unzip rsync xz-utils build-essential
 
-if ! command -v "${UV_BIN}" >/dev/null 2>&1; then
-    log "Installing uv"
-    curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
-    env UV_INSTALL_DIR=/usr/local/bin sh /tmp/uv-install.sh
-    rm -f /tmp/uv-install.sh
+if ! command -v "${UV_BIN}" >/dev/null 2>&1 || [[ "$("${UV_BIN}" --version 2>/dev/null | awk '{print $2}')" != "${UV_VERSION}" ]]; then
+    log "Installing uv ${UV_VERSION}"
+    install_uv
 else
-    log "uv is already installed"
+    log "uv ${UV_VERSION} is already installed"
 fi
 
 if ! id "${SERVICE_USER}" >/dev/null 2>&1; then
@@ -91,11 +123,11 @@ install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0750 "${SERVICE_HOME}/.c
 
 cd "${APP_DIR}"
 
-log "Installing Python 3.13 with uv"
-runuser -u "${SERVICE_USER}" -- env "${SERVICE_ENV[@]}" "${UV_BIN}" python install 3.13
+log "Installing Python ${PYTHON_VERSION} with uv"
+runuser -u "${SERVICE_USER}" -- env "${SERVICE_ENV[@]}" "${UV_BIN}" python install "${PYTHON_VERSION}"
 
 log "Installing Python dependencies"
-runuser -u "${SERVICE_USER}" -- env "${SERVICE_ENV[@]}" UV_LINK_MODE=copy "${UV_BIN}" sync --locked --python 3.13
+runuser -u "${SERVICE_USER}" -- env "${SERVICE_ENV[@]}" UV_LINK_MODE=copy "${UV_BIN}" sync --locked --python "${PYTHON_VERSION}"
 
 log "Installing Playwright system dependencies"
 "${APP_DIR}/.venv/bin/python" -m playwright install-deps chromium

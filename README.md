@@ -21,7 +21,8 @@ The bot stores user filters and already-seen listings in SQLite, so duplicate li
 
 ## Prerequisites
 
-- Python 3
+- Python 3.13.7, managed by `uv`
+- `uv` 0.8.15 for local development
 - A Telegram bot token from BotFather
 
 ## Setup From Zero
@@ -30,37 +31,29 @@ The bot stores user filters and already-seen listings in SQLite, so duplicate li
 
 If you already have the folder locally, just open it in VS Code or your terminal.
 
-### 2. Create a virtual environment
+### 2. Install dependencies
+
+Use [uv](https://docs.astral.sh/uv/) from the project root. The lockfile is part of the supply-chain protection for this bot, so install with `--locked`:
+
+```bash
+uv sync --locked
+```
+
+Activate the virtual environment if you want to run commands manually:
 
 Windows PowerShell:
 
 ```powershell
-py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
 macOS/Linux:
 
 ```bash
-python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-### 3. Install dependencies
-
-With pip:
-
-```bash
-pip install -r requirements.txt
-```
-
-Or with [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv sync
-```
-
-### 4. Install browser drivers
+### 3. Install browser drivers
 
 Two scrapers require browser automation. Run these once after installing dependencies:
 
@@ -72,7 +65,7 @@ playwright install chromium
 python -m camoufox fetch
 ```
 
-### 5. Create the environment file
+### 4. Create the environment file
 
 Create a `.env` file in the project root with the following content:
 
@@ -90,7 +83,7 @@ Environment variables:
 - `DB_PATH`: optional, SQLite database path, defaults to `listings.db`
 - `TELEGRAM_ALLOWED_CHAT_IDS`: optional, comma-separated Telegram chat IDs allowed to use the bot. Leave empty for local unrestricted use.
 
-### 6. Start the bot
+### 5. Start the bot
 
 ```bash
 python main.py
@@ -144,7 +137,6 @@ After that, the scheduled scanner will keep running in the background while the 
 |-- db.py
 |-- main.py
 |-- pyproject.toml
-|-- requirements.txt
 |-- scanner.py
 |-- scrapers/
 |   |-- base.py
@@ -204,7 +196,7 @@ If your SSH key is not the default key:
 
 The deploy script uploads the project to `/opt/amsterdam-house-bot`, uploads `.env` to `/etc/amsterdam-house-bot/bot.env`, creates `/var/lib/amsterdam-house-bot/listings.db` on first boot, installs dependencies, and starts a `systemd` service.
 
-The local `.env`, `.venv`, `.git`, `__pycache__`, and local database files are excluded from the code archive. The `.env` file is uploaded separately as the service environment file. During VPS setup, any `DB_PATH=` value from `.env` is removed so production always uses `/var/lib/amsterdam-house-bot/listings.db` and deployments do not reset sent-listing history. If an older deploy created `/opt/amsterdam-house-bot/listings.db`, the bootstrap script migrates it before replacing app files.
+The bootstrap pins `uv` to version `0.8.15`, verifies the downloaded binary checksum, installs Python `3.13.7`, and runs `uv sync --locked` so Python dependencies come from `uv.lock`. The local `.env`, `.venv`, `.git`, `__pycache__`, and local database files are excluded from the code archive. The `.env` file is uploaded separately as the service environment file. During VPS setup, any `DB_PATH=` value from `.env` is removed so production always uses `/var/lib/amsterdam-house-bot/listings.db` and deployments do not reset sent-listing history. If an older deploy created `/opt/amsterdam-house-bot/listings.db`, the bootstrap script migrates it before replacing app files.
 
 ### Manage The VPS Service
 
