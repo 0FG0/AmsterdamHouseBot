@@ -6,6 +6,7 @@ from telegram.constants import ParseMode
 
 import db
 from scrapers.funda import FundaScraper
+from scrapers.huurwoningen import HuurwoningenScraper
 from scrapers.kamernet import KamernetScraper
 from scrapers.pararius import ParariusScraper
 from scrapers.roofz import RoofzScraper
@@ -34,6 +35,12 @@ async def run_scan_for_user(bot: Bot, user_filters: dict) -> int:
             min_bedrooms=user_filters["min_bedrooms"],
             min_size_m2=user_filters["min_size_m2"],
             property_type=user_filters.get("kamernet_property_type", "any"),
+        ),
+        HuurwoningenScraper(
+            city=user_filters["city"],
+            max_price=user_filters["max_price"],
+            min_bedrooms=user_filters["min_bedrooms"],
+            min_size_m2=user_filters["min_size_m2"],
         ),
         RoofzScraper(
             city=user_filters["city"],

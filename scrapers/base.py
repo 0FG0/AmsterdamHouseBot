@@ -55,9 +55,9 @@ def parse_euro_amount(text: str | None) -> int | None:
 
     normalized = text.replace("\xa0", " ")
     patterns = (
-        r"(?:€|EUR)\s*(\d[\d.,]*)",
-        r"rent\s*price:?\s*(?:€|EUR)?\s*(\d[\d.,]*)",
-        r"(\d[\d.,]*)\s*(?:p/m|per\s+maand|per\s+month|/month)",
+        r"(?:€|EUR)\s*(\d[\d.,\s]*)",
+        r"rent\s*price:?\s*(?:€|EUR)?\s*(\d[\d.,\s]*)",
+        r"(\d[\d.,\s]*)\s*(?:pcm|p/m|per\s+maand|per\s+month|/month)",
     )
 
     match = None
@@ -66,15 +66,36 @@ def parse_euro_amount(text: str | None) -> int | None:
         if match:
             break
     if not match:
-        match = re.search(r"\d[\d.,]*", normalized)
+        match = re.search(r"\d[\d.,\s]*", normalized)
     if not match:
         return None
 
     value = match.group(1) if match.lastindex else match.group(0)
-    if "," in value:
-        value = value.split(",", 1)[0]
-    digits = re.sub(r"\D", "", value)
+    digits = _normalize_amount_digits(value)
     return int(digits) if digits else None
+
+
+def _normalize_amount_digits(value: str) -> str:
+    value = re.sub(r"\s+", "", value)
+    if "," in value and "." in value:
+        if value.rfind(",") > value.rfind("."):
+            value = value.replace(".", "").split(",", 1)[0]
+        else:
+            value = value.replace(",", "").split(".", 1)[0]
+    elif "," in value:
+        parts = value.split(",")
+        if len(parts[-1]) == 3 and all(part.isdigit() for part in parts):
+            value = "".join(parts)
+        else:
+            value = parts[0]
+    elif "." in value:
+        parts = value.split(".")
+        if len(parts[-1]) == 3 and all(part.isdigit() for part in parts):
+            value = "".join(parts)
+        else:
+            value = parts[0]
+
+    return re.sub(r"\D", "", value)
 
 
 def parse_first_int(text: str | None) -> int | None:

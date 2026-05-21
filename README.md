@@ -7,6 +7,7 @@ Supported sources:
 - Pararius
 - Funda
 - Kamernet
+- Huurwoningen
 - Roofz
 
 The bot stores user filters and already-seen listings in SQLite, so duplicate listings are not sent twice.
@@ -148,6 +149,7 @@ After that, the scheduled scanner will keep running in the background while the 
 |-- scrapers/
 |   |-- base.py
 |   |-- funda.py
+|   |-- huurwoningen.py
 |   |-- kamernet.py
 |   |-- pararius.py
 |   `-- roofz.py
