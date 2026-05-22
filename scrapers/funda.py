@@ -1,103 +1,188 @@
 import asyncio
 import logging
 import random
-from urllib.parse import quote
+import re
+from collections.abc import Iterable
 
-from bs4 import BeautifulSoup
-
-from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
+from .base import BaseScraper, Listing, parse_first_int
 
 logger = logging.getLogger(__name__)
 
 
 class FundaScraper(BaseScraper):
     SOURCE = "funda"
-    BASE_URL = "https://www.funda.nl"
-
-    def _build_url(self) -> str:
-        city = self.city.lower().replace(" ", "-")
-        selected_area = quote(f'["{city}"]')
-        url = f"{self.BASE_URL}/zoeken/huur?selected_area={selected_area}"
-        if self.max_price:
-            url += f"&price=0-{self.max_price}"
-        if self.min_bedrooms:
-            url += f"&rooms={self.min_bedrooms}-"
-        return url
 
     async def scrape(self) -> list[Listing]:
         try:
-            from camoufox.async_api import AsyncCamoufox
+            from funda import Funda
         except ImportError:
-            logger.error("Funda: camoufox is not installed. Run: python -m camoufox fetch")
+            logger.error("Funda: pyfunda is not installed. Run: uv sync --locked")
             return []
 
         try:
             await asyncio.sleep(random.uniform(1.0, 3.0))
-            async with AsyncCamoufox(headless=True, locale=("nl-NL",)) as browser:
-                page = await browser.new_page()
-                await page.goto(self._build_url(), wait_until="networkidle", timeout=30000)
-                html = await page.content()
-
-            soup = BeautifulSoup(html, "lxml")
-            listings = [
-                listing
-                for address_link in soup.find_all(attrs={"data-testid": "listingDetailsAddress"})
-                if (listing := self._parse_card(address_link)) and self._matches_filters(listing)
-            ]
+            listings = await asyncio.to_thread(self._scrape_sync, Funda)
+            listings = [listing for listing in listings if self._matches_filters(listing)]
             logger.info("Funda: found %d matching listings", len(listings))
             return listings
         except Exception as exc:
             logger.error("Funda scrape error: %s", exc)
             return []
 
-    def _parse_card(self, address_link) -> Listing | None:
-        try:
-            href = address_link.get("href", "")
-            if not href:
-                return None
+    def _scrape_sync(self, client_cls) -> list[Listing]:
+        filters: dict[str, object] = {
+            "category": "rent",
+            "sort": "newest",
+        }
+        if self.max_price:
+            filters["max_price"] = self.max_price
+        if self.min_bedrooms:
+            filters["min_rooms"] = self.min_bedrooms
+        if self.min_size_m2:
+            filters["min_area"] = self.min_size_m2
 
-            full_url = f"{self.BASE_URL}{href}" if href.startswith("/") else href
-            listing_id = href.strip("/").split("/")[-1]
-            address = address_link.get_text(" ", strip=True)
-            card = address_link.find_parent("div")
-            card_root = card.find_parent("div") if card else None
-            search_root = card_root or card or address_link
+        with client_cls(timeout=30, max_retries=5, retry_backoff=0.2) as client:
+            raw_listings = client.search(self.city.lower(), **filters)
 
-            price = ""
-            for element in search_root.select("div.font-semibold, b, span"):
-                text = element.get_text(" ", strip=True)
-                if "maand" in text.lower() or "eur" in text.lower() or "€" in text:
-                    price = text
-                    break
+        listings: list[Listing] = []
+        seen_ids: set[str] = set()
+        for raw_listing in raw_listings:
+            listing = self._convert_listing(raw_listing)
+            if not listing or listing.id in seen_ids:
+                continue
+            seen_ids.add(listing.id)
+            listings.append(listing)
+        return listings
 
-            rooms, bedrooms, size_label, size_value = None, None, None, None
-            for item in search_root.select("ul li"):
-                text = item.get_text(" ", strip=True).replace("\xa0", " ")
-                lower = text.lower()
-                if "m2" in lower or "m²" in lower:
-                    size_label = text
-                    size_value = parse_first_int(text)
-                elif "kamer" in lower or "slaapkamer" in lower or text.strip().isdigit():
-                    rooms = text if not text.strip().isdigit() else f"{text} kamers"
-                    bedrooms = parse_first_int(text)
-
-            image = search_root.select_one("img[src*='funda']") or search_root.select_one("img")
-            image_url = image.get("src") if image else None
-
-            return Listing(
-                id=listing_id,
-                source=self.SOURCE,
-                title=address,
-                price=price,
-                address=address,
-                url=full_url,
-                image_url=image_url,
-                rooms=rooms,
-                size_m2=size_label,
-                price_eur=parse_euro_amount(price),
-                bedrooms=bedrooms,
-                size_m2_value=size_value,
-            )
-        except Exception as exc:
-            logger.warning("Funda card parse error: %s", exc)
+    def _convert_listing(self, raw_listing) -> Listing | None:
+        url = _listing_url(raw_listing)
+        listing_id = _listing_id(raw_listing, url)
+        if not listing_id:
             return None
+
+        title = _first_text(getattr(raw_listing, "title", None)) or f"Funda listing {listing_id}"
+        city = _first_text(getattr(raw_listing, "city", None))
+        address = _address(title, city)
+
+        price_obj = getattr(raw_listing, "price", None)
+        price_eur = _as_int(getattr(price_obj, "amount", None))
+        price = _first_text(getattr(price_obj, "formatted", None))
+        if not price and price_eur:
+            price = f"EUR {price_eur}"
+
+        rooms_count = _as_int(getattr(raw_listing, "rooms_count", None))
+        bedrooms_count = _as_int(getattr(raw_listing, "bedrooms", None))
+        rooms_label = _rooms_label(rooms_count, bedrooms_count)
+
+        size_value = _as_int(getattr(raw_listing, "living_area", None))
+        size_label = f"{size_value} m2" if size_value else None
+
+        return Listing(
+            id=listing_id,
+            source=self.SOURCE,
+            title=title,
+            price=price,
+            address=address,
+            url=url or f"https://www.funda.nl/detail/huur/{listing_id}/",
+            image_url=_first_photo_url(getattr(raw_listing, "media", None)),
+            rooms=rooms_label,
+            size_m2=size_label,
+            price_eur=price_eur,
+            bedrooms=rooms_count or bedrooms_count,
+            size_m2_value=size_value,
+        )
+
+
+def _listing_url(raw_listing) -> str:
+    urls = getattr(raw_listing, "urls", None)
+    full_url = _first_text(
+        getattr(raw_listing, "url", None),
+        getattr(urls, "full", None),
+        getattr(urls, "share", None),
+    )
+    if full_url:
+        return full_url
+
+    path = _first_text(getattr(raw_listing, "detail_url", None), getattr(urls, "path", None))
+    if path.startswith("/"):
+        return f"https://www.funda.nl{path}"
+    return path
+
+
+def _listing_id(raw_listing, url: str) -> str:
+    url_id = _id_from_url(url)
+    if url_id:
+        return url_id
+
+    for value in (
+        getattr(raw_listing, "tiny_id", None),
+        getattr(raw_listing, "global_id", None),
+        getattr(raw_listing, "id", None),
+    ):
+        text = _first_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _id_from_url(url: str) -> str:
+    if not url:
+        return ""
+    matches = re.findall(r"\d{7,9}", url)
+    return matches[-1] if matches else ""
+
+
+def _first_text(*values) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _as_int(value) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return parse_first_int(str(value))
+
+
+def _address(title: str, city: str) -> str:
+    if city and city.lower() not in title.lower():
+        return f"{title}, {city}"
+    return title
+
+
+def _rooms_label(rooms_count: int | None, bedrooms_count: int | None) -> str | None:
+    if rooms_count and bedrooms_count and rooms_count != bedrooms_count:
+        return f"{_count_label(rooms_count, 'room')}, {_count_label(bedrooms_count, 'bedroom')}"
+    if rooms_count:
+        return _count_label(rooms_count, "room")
+    if bedrooms_count:
+        return _count_label(bedrooms_count, "bedroom")
+    return None
+
+
+def _count_label(count: int, noun: str) -> str:
+    suffix = "" if count == 1 else "s"
+    return f"{count} {noun}{suffix}"
+
+
+def _first_photo_url(media) -> str | None:
+    if not media:
+        return None
+
+    photo_urls = getattr(media, "photo_urls", None)
+    if isinstance(photo_urls, str):
+        return photo_urls or None
+    if isinstance(photo_urls, Iterable):
+        for photo_url in photo_urls:
+            text = _first_text(photo_url)
+            if text:
+                return text
+    return None

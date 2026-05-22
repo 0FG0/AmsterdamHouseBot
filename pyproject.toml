@@ -12,7 +12,6 @@ dependencies = [
     "lxml==6.1.0",
     "aiosqlite==0.20.0",
     "python-dotenv==1.0.1",
+    "pyfunda==3.1.1",
     "playwright==1.59.0",
-    "camoufox[geoip]==0.4.11",
-    "playwright-stealth==2.0.3",
 ]

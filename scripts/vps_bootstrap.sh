@@ -134,7 +134,6 @@ log "Installing Playwright system dependencies"
 
 log "Installing browser assets"
 runuser -u "${SERVICE_USER}" -- env "${SERVICE_ENV[@]}" "${APP_DIR}/.venv/bin/python" -m playwright install chromium
-runuser -u "${SERVICE_USER}" -- env "${SERVICE_ENV[@]}" "${APP_DIR}/.venv/bin/python" -m camoufox fetch
 
 log "Installing systemd service"
 install -m 0644 "${APP_DIR}/deploy/${SERVICE_NAME}" "/etc/systemd/system/${SERVICE_NAME}"

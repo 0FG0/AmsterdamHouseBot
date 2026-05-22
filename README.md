@@ -55,14 +55,11 @@ source .venv/bin/activate
 
 ### 3. Install browser drivers
 
-Two scrapers require browser automation. Run these once after installing dependencies:
+Roofz requires browser automation. Run this once after installing dependencies:
 
 ```bash
 # For Roofz (Playwright)
 playwright install chromium
-
-# For Funda (Camoufox)
-python -m camoufox fetch
 ```
 
 ### 4. Create the environment file
