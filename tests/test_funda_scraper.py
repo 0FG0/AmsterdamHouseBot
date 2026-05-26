@@ -32,6 +32,7 @@ class FundaScraperTests(unittest.TestCase):
         self.assertEqual(listing.title, "Prinsengracht 1")
         self.assertEqual(listing.address, "Prinsengracht 1, Amsterdam")
         self.assertEqual(listing.price, "EUR 1850")
+        self.assertEqual(listing.url, "https://www.funda.nl/detail/huur/amsterdam/example/12345678/")
         self.assertEqual(listing.price_eur, 1850)
         self.assertEqual(listing.rooms, "2 rooms, 1 bedroom")
         self.assertEqual(listing.bedrooms, 2)
@@ -91,6 +92,23 @@ class FundaScraperTests(unittest.TestCase):
             listing.url,
             "https://www.funda.nl/detail/huur/amsterdam/example/12345678/",
         )
+
+    def test_convert_listing_expands_relative_urls_without_leading_slash(self):
+        listing = FundaScraper()._convert_listing(
+            _raw_listing(url=None, detail_url="detail/huur/amsterdam/example/12345678/")
+        )
+
+        self.assertEqual(
+            listing.url,
+            "https://www.funda.nl/detail/huur/amsterdam/example/12345678/",
+        )
+
+    def test_convert_listing_uses_working_id_fallback_url(self):
+        listing = FundaScraper()._convert_listing(
+            _raw_listing(url=None, detail_url=None)
+        )
+
+        self.assertEqual(listing.url, "https://www.funda.nl/detail/12345678/")
 
 
 if __name__ == "__main__":

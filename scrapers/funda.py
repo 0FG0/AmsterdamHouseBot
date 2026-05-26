@@ -3,10 +3,13 @@ import logging
 import random
 import re
 from collections.abc import Iterable
+from urllib.parse import urljoin, urlparse
 
 from .base import BaseScraper, Listing, parse_first_int
 
 logger = logging.getLogger(__name__)
+
+FUNDA_BASE_URL = "https://www.funda.nl"
 
 
 class FundaScraper(BaseScraper):
@@ -83,7 +86,7 @@ class FundaScraper(BaseScraper):
             title=title,
             price=price,
             address=address,
-            url=url or f"https://www.funda.nl/detail/huur/{listing_id}/",
+            url=url or _fallback_listing_url(listing_id),
             image_url=_first_photo_url(getattr(raw_listing, "media", None)),
             rooms=rooms_label,
             size_m2=size_label,
@@ -101,12 +104,29 @@ def _listing_url(raw_listing) -> str:
         getattr(urls, "share", None),
     )
     if full_url:
-        return full_url
+        return _absolute_funda_url(full_url)
 
     path = _first_text(getattr(raw_listing, "detail_url", None), getattr(urls, "path", None))
-    if path.startswith("/"):
-        return f"https://www.funda.nl{path}"
-    return path
+    return _absolute_funda_url(path)
+
+
+def _absolute_funda_url(url: str) -> str:
+    text = _first_text(url)
+    if not text:
+        return ""
+    if text.startswith("//"):
+        return f"https:{text}"
+    if text.startswith("www.funda.nl"):
+        return f"https://{text}"
+
+    parsed = urlparse(text)
+    if parsed.scheme in {"http", "https"}:
+        return text
+    return urljoin(f"{FUNDA_BASE_URL}/", text.lstrip("/"))
+
+
+def _fallback_listing_url(listing_id: str) -> str:
+    return f"{FUNDA_BASE_URL}/detail/{listing_id}/"
 
 
 def _listing_id(raw_listing, url: str) -> str:
