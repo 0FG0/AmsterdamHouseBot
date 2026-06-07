@@ -1,6 +1,4 @@
-import asyncio
 import logging
-import random
 import re
 from urllib.parse import urlparse
 
@@ -27,23 +25,23 @@ class RoofzScraper(BaseScraper):
             logger.error("Roofz: playwright is not installed. Run: playwright install chromium")
             return []
 
-        await asyncio.sleep(random.uniform(1.0, 3.0))
         listings: list[Listing] = []
         try:
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch(headless=True)
-                page = await browser.new_page(viewport={"width": 1440, "height": 1200})
+                try:
+                    page = await browser.new_page(viewport={"width": 1440, "height": 1200})
 
-                for url in self._urls():
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    await self._settle_page(page)
-                    await self._try_select_city(page)
-                    listings = await self._extract_listings(page)
-                    listings = [listing for listing in listings if self._matches_filters(listing)]
-                    if listings:
-                        break
-
-                await browser.close()
+                    for url in self._urls():
+                        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                        await self._settle_page(page)
+                        await self._try_select_city(page)
+                        listings = await self._extract_listings(page)
+                        listings = [listing for listing in listings if self._matches_filters(listing)]
+                        if listings:
+                            break
+                finally:
+                    await browser.close()
         except Exception as exc:
             logger.error("Roofz scrape error: %s", exc)
             return []

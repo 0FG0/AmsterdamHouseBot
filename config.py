@@ -15,8 +15,22 @@ def _parse_chat_ids(raw_value: str) -> set[int]:
     return chat_ids
 
 
+def _parse_bool(raw_value: str) -> bool:
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "300"))
+PARARIUS_POLL_INTERVAL_SECONDS = int(
+    os.getenv("PARARIUS_POLL_INTERVAL_SECONDS", str(min(POLL_INTERVAL_SECONDS, 60)))
+)
+ROOFZ_POLL_INTERVAL_SECONDS = int(
+    os.getenv("ROOFZ_POLL_INTERVAL_SECONDS", str(max(POLL_INTERVAL_SECONDS * 5, 900)))
+)
+SCRAPER_TIMEOUT_SECONDS = int(os.getenv("SCRAPER_TIMEOUT_SECONDS", "45"))
+PARARIUS_SCRAPER_TIMEOUT_SECONDS = int(os.getenv("PARARIUS_SCRAPER_TIMEOUT_SECONDS", "20"))
+ROOFZ_SCRAPER_TIMEOUT_SECONDS = int(os.getenv("ROOFZ_SCRAPER_TIMEOUT_SECONDS", "90"))
+ROOFZ_ENABLED = _parse_bool(os.getenv("ROOFZ_ENABLED", "true"))
 DB_PATH = os.getenv("DB_PATH", "listings.db")
 TELEGRAM_ALLOWED_CHAT_IDS = _parse_chat_ids(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", ""))
 

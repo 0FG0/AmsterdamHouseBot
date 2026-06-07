@@ -14,7 +14,8 @@ The bot stores user filters and already-seen listings in SQLite, so duplicate li
 
 ## What it does
 
-- Runs a scheduled scan every `POLL_INTERVAL_SECONDS` seconds
+- Runs Pararius on a fast scan loop, other HTML/API sources on the general loop, and Roofz on a slower isolated loop
+- Checks both the Amsterdam Pararius search page and Pararius' public newest-rentals feed
 - Lets each Telegram user save their own Kamernet property types, rent, bedroom/room, and surface-area filters
 - Sends new listings directly in Telegram
 - Supports an on-demand scan with `/test`
@@ -68,7 +69,13 @@ Create a `.env` file in the project root with the following content:
 
 ```env
 TELEGRAM_TOKEN=123456789:replace-with-your-real-token
-POLL_INTERVAL_SECONDS=300
+POLL_INTERVAL_SECONDS=120
+PARARIUS_POLL_INTERVAL_SECONDS=60
+ROOFZ_POLL_INTERVAL_SECONDS=900
+SCRAPER_TIMEOUT_SECONDS=45
+PARARIUS_SCRAPER_TIMEOUT_SECONDS=20
+ROOFZ_SCRAPER_TIMEOUT_SECONDS=90
+ROOFZ_ENABLED=true
 DB_PATH=listings.db
 TELEGRAM_ALLOWED_CHAT_IDS=123456789
 ```
@@ -76,7 +83,13 @@ TELEGRAM_ALLOWED_CHAT_IDS=123456789
 Environment variables:
 
 - `TELEGRAM_TOKEN`: required, Telegram bot token from BotFather
-- `POLL_INTERVAL_SECONDS`: optional, scan interval in seconds, defaults to `300`
+- `POLL_INTERVAL_SECONDS`: optional, general scan interval for Funda, Kamernet, and Huurwoningen, defaults to `300`
+- `PARARIUS_POLL_INTERVAL_SECONDS`: optional, fast Pararius scan interval, defaults to the lower of `POLL_INTERVAL_SECONDS` and `60`
+- `ROOFZ_POLL_INTERVAL_SECONDS`: optional, isolated Roofz scan interval, defaults to the higher of `POLL_INTERVAL_SECONDS * 5` and `900`
+- `SCRAPER_TIMEOUT_SECONDS`: optional, timeout for general scrapers, defaults to `45`
+- `PARARIUS_SCRAPER_TIMEOUT_SECONDS`: optional, timeout for Pararius, defaults to `20`
+- `ROOFZ_SCRAPER_TIMEOUT_SECONDS`: optional, timeout for Roofz browser automation, defaults to `90`
+- `ROOFZ_ENABLED`: optional, set to `false` to disable Roofz, defaults to `true`
 - `DB_PATH`: optional, SQLite database path, defaults to `listings.db`
 - `TELEGRAM_ALLOWED_CHAT_IDS`: optional, comma-separated Telegram chat IDs allowed to use the bot. Leave empty for local unrestricted use.
 
@@ -122,7 +135,7 @@ After that, the scheduled scanner will keep running in the background while the 
 
 1. `main.py` starts the Telegram application.
 2. `bot.py` registers commands and schedules the recurring scan job.
-3. `scanner.py` runs all scrapers for each active user.
+3. `scanner.py` runs selected scrapers for each active user, with Pararius, general sources, and Roofz scheduled separately.
 4. `db.py` stores filters and deduplicates listings in SQLite.
 
 ## Project Structure

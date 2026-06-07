@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import random
 import re
 from collections.abc import Iterable
 from urllib.parse import urljoin, urlparse
@@ -23,7 +22,6 @@ class FundaScraper(BaseScraper):
             return []
 
         try:
-            await asyncio.sleep(random.uniform(1.0, 3.0))
             listings = await asyncio.to_thread(self._scrape_sync, Funda)
             listings = [listing for listing in listings if self._matches_filters(listing)]
             logger.info("Funda: found %d matching listings", len(listings))

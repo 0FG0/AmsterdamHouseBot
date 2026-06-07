@@ -1,7 +1,5 @@
-import asyncio
 import json
 import logging
-import random
 import re
 from collections.abc import Iterable
 from urllib.parse import urlencode
@@ -90,7 +88,6 @@ class KamernetScraper(BaseScraper):
     async def scrape(self) -> list[Listing]:
         try:
             async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                await asyncio.sleep(random.uniform(2.0, 4.0))
                 response = await client.get(self._build_url(), headers=_HEADERS)
                 response.raise_for_status()
 

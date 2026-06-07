@@ -1,0 +1,100 @@
+import unittest
+from unittest.mock import AsyncMock
+
+from scrapers.pararius import ParariusScraper
+
+
+LATEST_HTML = """
+<html>
+  <body>
+    <article>
+      <a href="/appartement-te-huur/amsterdam/0ab6aa57/singel">Appartement Singel</a>
+      <p>1012 WL Amsterdam (Centrum)</p>
+      <p>EUR 1500 per maand</p>
+      <p>50 m2</p>
+      <p>2 kamers</p>
+    </article>
+    <article>
+      <a href="/appartement-te-huur/rotterdam/abcdef12/markt">Appartement Markt</a>
+      <p>3011 XZ Rotterdam (Centrum)</p>
+      <p>EUR 1200 per maand</p>
+      <p>55 m2</p>
+      <p>2 kamers</p>
+    </article>
+  </body>
+</html>
+"""
+
+
+CITY_HTML = """
+<html>
+  <body>
+    <section class="listing-search-item">
+      <a class="listing-search-item__link--title" href="/appartement-te-huur/amsterdam/0ab6aa57/singel">
+        Appartement Singel
+      </a>
+      <h2 class="listing-search-item__title">Appartement Singel</h2>
+      <div class="listing-search-item__sub-title">1012 WL Amsterdam (Centrum)</div>
+      <div class="listing-search-item__price">EUR 1500 per maand</div>
+      <ul class="listing-search-item__features">
+        <li>50 m2</li>
+        <li>2 kamers</li>
+      </ul>
+    </section>
+    <section class="listing-search-item">
+      <a class="listing-search-item__link--title" href="/appartement-te-huur/amsterdam/12345678/prinsengracht">
+        Appartement Prinsengracht
+      </a>
+      <h2 class="listing-search-item__title">Appartement Prinsengracht</h2>
+      <div class="listing-search-item__sub-title">1015 AB Amsterdam (Jordaan)</div>
+      <div class="listing-search-item__price">EUR 1750 per maand</div>
+      <ul class="listing-search-item__features">
+        <li>65 m2</li>
+        <li>3 kamers</li>
+      </ul>
+    </section>
+  </body>
+</html>
+"""
+
+
+class ParariusScraperTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scrape_merges_latest_and_city_pages_without_duplicate_listing_ids(self):
+        scraper = ParariusScraper(
+            city="Amsterdam",
+            max_price=2000,
+            min_bedrooms=1,
+            min_size_m2=0,
+        )
+        scraper._fetch_pages = AsyncMock(
+            return_value=[
+                ("latest", LATEST_HTML),
+                ("city", CITY_HTML),
+            ]
+        )
+
+        listings = await scraper.scrape()
+
+        self.assertEqual([listing.id for listing in listings], ["0ab6aa57", "12345678"])
+        self.assertTrue(all(listing.source == "pararius" for listing in listings))
+        self.assertEqual(listings[0].title, "Appartement Singel")
+        self.assertEqual(listings[0].price_eur, 1500)
+        self.assertEqual(listings[0].size_m2_value, 50)
+        self.assertEqual(listings[0].bedrooms, 2)
+
+    async def test_latest_page_is_filtered_by_city_and_price(self):
+        scraper = ParariusScraper(
+            city="Amsterdam",
+            max_price=1400,
+            min_bedrooms=1,
+            min_size_m2=0,
+        )
+        scraper._fetch_pages = AsyncMock(return_value=[("latest", LATEST_HTML)])
+
+        listings = await scraper.scrape()
+
+        self.assertEqual(listings, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

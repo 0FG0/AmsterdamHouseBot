@@ -12,7 +12,13 @@ from telegram.ext import (
 
 import config
 import db
-from scanner import run_scan_for_user
+from scanner import (
+    FAST_SOURCES,
+    GENERAL_SOURCES,
+    ROOFZ_SOURCES,
+    enabled_all_sources,
+    run_scan_for_user,
+)
 from scrapers.kamernet import (
     KAMERNET_PROPERTY_TYPE_LABELS,
     format_kamernet_property_types,
@@ -62,24 +68,65 @@ def create_application() -> Application:
     app.add_handler(search_conversation)
 
     app.job_queue.run_repeating(
+        scheduled_pararius_scan,
+        interval=config.PARARIUS_POLL_INTERVAL_SECONDS,
+        first=5,
+        name="pararius-fast-scan",
+        job_kwargs=_scan_job_kwargs(config.PARARIUS_POLL_INTERVAL_SECONDS),
+    )
+    app.job_queue.run_repeating(
         scheduled_scan,
         interval=config.POLL_INTERVAL_SECONDS,
         first=20,
+        name="general-scan",
+        job_kwargs=_scan_job_kwargs(config.POLL_INTERVAL_SECONDS),
     )
+    if config.ROOFZ_ENABLED:
+        app.job_queue.run_repeating(
+            scheduled_roofz_scan,
+            interval=config.ROOFZ_POLL_INTERVAL_SECONDS,
+            first=45,
+            name="roofz-scan",
+            job_kwargs=_scan_job_kwargs(config.ROOFZ_POLL_INTERVAL_SECONDS),
+        )
 
     return app
 
 
+async def scheduled_pararius_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _scheduled_scan_for_sources(context, "Pararius fast", FAST_SOURCES)
+
+
 async def scheduled_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _scheduled_scan_for_sources(context, "General", GENERAL_SOURCES)
+
+
+async def scheduled_roofz_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _scheduled_scan_for_sources(context, "Roofz", ROOFZ_SOURCES)
+
+
+async def _scheduled_scan_for_sources(
+    context: ContextTypes.DEFAULT_TYPE,
+    label: str,
+    sources: tuple[str, ...],
+) -> None:
     users = await db.get_all_active_users()
     if config.TELEGRAM_ALLOWED_CHAT_IDS:
         users = [user for user in users if user["chat_id"] in config.TELEGRAM_ALLOWED_CHAT_IDS]
-    logger.info("Scheduled scan: %d active users.", len(users))
+    logger.info("%s scheduled scan: %d active users, sources=%s", label, len(users), ",".join(sources))
     for user in users:
         try:
-            await run_scan_for_user(context.bot, user)
+            await run_scan_for_user(context.bot, user, sources=sources)
         except Exception as exc:
-            logger.error("Scan error for user %s: %s", user["chat_id"], exc)
+            logger.error("%s scan error for user %s: %s", label, user["chat_id"], exc)
+
+
+def _scan_job_kwargs(interval_seconds: int) -> dict:
+    return {
+        "coalesce": True,
+        "max_instances": 1,
+        "misfire_grace_time": max(5, interval_seconds),
+    }
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -96,7 +143,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/resume - resume notifications\n"
         "/clear - clear sent/seen listings\n\n"
         "Notifications start after you complete /search.\n"
-        f"I scan every {_format_interval(config.POLL_INTERVAL_SECONDS)}."
+        f"{_format_scan_schedule()}"
     )
 
 
@@ -311,7 +358,12 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await update.message.reply_text("Searching for listings now...")
-    count = await run_scan_for_user(context.bot, user_filters, require_active=False)
+    count = await run_scan_for_user(
+        context.bot,
+        user_filters,
+        require_active=False,
+        sources=enabled_all_sources(),
+    )
     if count == 0:
         await update.message.reply_text("No new matching listings found at the moment.")
     else:
@@ -436,3 +488,15 @@ def _format_interval(seconds: int) -> str:
         minutes = seconds // 60
         return f"{minutes} minute{'s' if minutes != 1 else ''}"
     return f"{seconds} second{'s' if seconds != 1 else ''}"
+
+
+def _format_scan_schedule() -> str:
+    schedule = (
+        f"I scan Pararius every {_format_interval(config.PARARIUS_POLL_INTERVAL_SECONDS)}, "
+        f"Funda/Kamernet/Huurwoningen every {_format_interval(config.POLL_INTERVAL_SECONDS)}"
+    )
+    if config.ROOFZ_ENABLED:
+        schedule += f", and Roofz every {_format_interval(config.ROOFZ_POLL_INTERVAL_SECONDS)}."
+    else:
+        schedule += ". Roofz scanning is disabled."
+    return schedule

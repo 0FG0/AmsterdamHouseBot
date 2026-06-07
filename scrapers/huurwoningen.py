@@ -1,6 +1,4 @@
-import asyncio
 import logging
-import random
 import re
 from urllib.parse import urlencode, urljoin
 
@@ -55,7 +53,6 @@ class HuurwoningenScraper(BaseScraper):
 
     async def scrape(self) -> list[Listing]:
         try:
-            await asyncio.sleep(random.uniform(1.0, 3.0))
             url = self._build_url()
             if _USE_CURL:
                 async with CurlAsyncSession(impersonate="chrome124") as session:

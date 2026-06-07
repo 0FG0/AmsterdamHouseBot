@@ -1,4 +1,5 @@
 import json
+from collections.abc import Iterable
 
 import aiosqlite
 
@@ -59,10 +60,18 @@ async def _ensure_column(db: aiosqlite.Connection, table: str, column: str, defi
 
 
 async def mark_seen(source: str, listing_id: str, url: str = "", title: str = "", price: str = ""):
+    await mark_seen_many([(source, listing_id, url, title, price)])
+
+
+async def mark_seen_many(rows: Iterable[tuple[str, str, str, str, str]]) -> None:
+    values = list(rows)
+    if not values:
+        return
+
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+        await db.executemany(
             "INSERT OR IGNORE INTO seen_listings (source, listing_id, url, title, price) VALUES (?,?,?,?,?)",
-            (source, listing_id, url, title, price),
+            values,
         )
         await db.commit()
 
@@ -76,11 +85,35 @@ async def was_sent(chat_id: int, source: str, listing_id: str) -> bool:
             return await cur.fetchone() is not None
 
 
-async def mark_sent(chat_id: int, source: str, listing_id: str) -> None:
+async def get_sent_listing_ids(chat_id: int, source: str, listing_ids: Iterable[str]) -> set[str]:
+    ids = list(dict.fromkeys(listing_ids))
+    if not ids:
+        return set()
+
+    placeholders = ",".join("?" for _ in ids)
+    query = (
+        "SELECT listing_id FROM sent_listings "
+        f"WHERE chat_id=? AND source=? AND listing_id IN ({placeholders})"
+    )
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+        async with db.execute(query, (chat_id, source, *ids)) as cur:
+            rows = await cur.fetchall()
+            return {row[0] for row in rows}
+
+
+async def mark_sent(chat_id: int, source: str, listing_id: str) -> None:
+    await mark_sent_many(chat_id, source, [listing_id])
+
+
+async def mark_sent_many(chat_id: int, source: str, listing_ids: Iterable[str]) -> None:
+    ids = list(dict.fromkeys(listing_ids))
+    if not ids:
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
             "INSERT OR IGNORE INTO sent_listings (chat_id, source, listing_id) VALUES (?, ?, ?)",
-            (chat_id, source, listing_id),
+            [(chat_id, source, listing_id) for listing_id in ids],
         )
         await db.commit()
 
