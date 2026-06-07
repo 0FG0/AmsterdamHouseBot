@@ -49,6 +49,7 @@ def create_application() -> Application:
     app = Application.builder().token(config.TELEGRAM_TOKEN).post_init(_post_init).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler(["help", "commands"], cmd_help))
     app.add_handler(CommandHandler("filters", cmd_filters))
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
@@ -135,16 +136,17 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(
         "Amsterdam House Bot is running.\n\n"
-        "Commands:\n"
-        "/search - set Kamernet property types, rent, bedrooms, and size filters\n"
-        "/filters - show active filters\n"
-        "/test - scan now\n"
-        "/pause - pause notifications\n"
-        "/resume - resume notifications\n"
-        "/clear - clear sent/seen listings\n\n"
+        f"{_format_command_help()}\n\n"
         "Notifications start after you complete /search.\n"
         f"{_format_scan_schedule()}"
     )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _ensure_authorized(update):
+        return
+
+    await update.message.reply_text(_format_command_help())
 
 
 async def cmd_filters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -480,6 +482,28 @@ def _format_filters(user_filters: dict) -> str:
         f"Minimum bedrooms/rooms: {bedrooms_text}\n"
         f"Minimum size: {size_text}\n"
         f"Status: {status_text}"
+    )
+
+
+def _format_command_help() -> str:
+    property_types = ", ".join(KAMERNET_PROPERTY_TYPE_LABELS.values())
+    return (
+        "Available commands:\n"
+        "/start - start the bot and show this help\n"
+        "/help - show available commands and options\n"
+        "/commands - same as /help\n"
+        "/search - set or update your filters\n"
+        "/filters - show active filters\n"
+        "/test - scan now using saved filters\n"
+        "/pause - pause notifications\n"
+        "/resume - resume notifications\n"
+        "/clear - clear sent/seen listings\n"
+        "/cancel - cancel the /search setup flow\n\n"
+        "/search options:\n"
+        f"Property types: {property_types}\n"
+        "Max rent: number in EUR, or 0 for no limit\n"
+        "Minimum bedrooms/rooms: number, or 0 for no minimum\n"
+        "Minimum size: number in m2, or 0 for no minimum"
     )
 
 

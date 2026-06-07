@@ -123,6 +123,8 @@ After that, the scheduled scanner will keep running in the background while the 
 ## Available Commands
 
 - `/start` - initialize the bot and show help
+- `/help` - show available commands and options
+- `/commands` - same as `/help`
 - `/search` - save or update filters
 - `/filters` - show current filters
 - `/test` - run a scan immediately
@@ -130,6 +132,13 @@ After that, the scheduled scanner will keep running in the background while the 
 - `/resume` - resume notifications
 - `/clear` - clear the seen listings database
 - `/cancel` - cancel the filter setup flow
+
+`/search` options:
+
+- Kamernet property types: `Any property type`, `Room`, `Apartment`, `Studio`, `Anti-squat`, `Student Housing`, `Furnished`, `Short Term`, `Long Term`
+- Max rent: number in EUR, or `0` for no limit
+- Minimum bedrooms/rooms: number, or `0` for no minimum
+- Minimum size: number in m2, or `0` for no minimum
 
 ## How the bot works
 
