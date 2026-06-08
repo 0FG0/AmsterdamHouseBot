@@ -517,7 +517,7 @@ def _format_interval(seconds: int) -> str:
 def _format_scan_schedule() -> str:
     schedule = (
         f"I scan Pararius every {_format_interval(config.PARARIUS_POLL_INTERVAL_SECONDS)}, "
-        f"Funda/Kamernet/Huurwoningen every {_format_interval(config.POLL_INTERVAL_SECONDS)}"
+        f"Funda/Kamernet/Huurwoningen/VVA every {_format_interval(config.POLL_INTERVAL_SECONDS)}"
     )
     if config.ROOFZ_ENABLED:
         schedule += f", and Roofz every {_format_interval(config.ROOFZ_POLL_INTERVAL_SECONDS)}."

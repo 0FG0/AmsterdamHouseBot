@@ -8,13 +8,14 @@ Supported sources:
 - Funda
 - Kamernet
 - Huurwoningen
+- VVA
 - Roofz
 
 The bot stores user filters and already-seen listings in SQLite, so duplicate listings are not sent twice.
 
 ## What it does
 
-- Runs Pararius on a fast scan loop, other HTML/API sources on the general loop, and Roofz on a slower isolated loop
+- Runs Pararius on a fast scan loop, Funda/Kamernet/Huurwoningen/VVA on the general loop, and Roofz on a slower isolated loop
 - Checks both the Amsterdam Pararius search page and Pararius' public newest-rentals feed
 - Lets each Telegram user save their own Kamernet property types, rent, bedroom/room, and surface-area filters
 - Sends new listings directly in Telegram
@@ -83,7 +84,7 @@ TELEGRAM_ALLOWED_CHAT_IDS=123456789
 Environment variables:
 
 - `TELEGRAM_TOKEN`: required, Telegram bot token from BotFather
-- `POLL_INTERVAL_SECONDS`: optional, general scan interval for Funda, Kamernet, and Huurwoningen, defaults to `300`
+- `POLL_INTERVAL_SECONDS`: optional, general scan interval for Funda, Kamernet, Huurwoningen, and VVA, defaults to `300`
 - `PARARIUS_POLL_INTERVAL_SECONDS`: optional, fast Pararius scan interval, defaults to the lower of `POLL_INTERVAL_SECONDS` and `60`
 - `ROOFZ_POLL_INTERVAL_SECONDS`: optional, isolated Roofz scan interval, defaults to the higher of `POLL_INTERVAL_SECONDS * 5` and `900`
 - `SCRAPER_TIMEOUT_SECONDS`: optional, timeout for general scrapers, defaults to `45`
@@ -163,7 +164,8 @@ After that, the scheduled scanner will keep running in the background while the 
 |   |-- huurwoningen.py
 |   |-- kamernet.py
 |   |-- pararius.py
-|   `-- roofz.py
+|   |-- roofz.py
+|   `-- vva.py
 `-- uv.lock
 ```
 

@@ -43,6 +43,13 @@ class _FakeScraper:
 
 
 class ScannerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vva_is_registered_as_general_source(self):
+        self.assertIn(scanner.VVA_SOURCE, scanner.GENERAL_SOURCES)
+
+        scraper = scanner._build_scraper("vva", _filters())
+
+        self.assertEqual(scraper.SOURCE, "vva")
+
     async def test_run_scan_for_user_scans_sources_concurrently_and_batches_db(self):
         started: set[str] = set()
         release = asyncio.Event()

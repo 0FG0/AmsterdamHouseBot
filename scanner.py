@@ -14,6 +14,7 @@ from scrapers.huurwoningen import HuurwoningenScraper
 from scrapers.kamernet import KamernetScraper
 from scrapers.pararius import ParariusScraper
 from scrapers.roofz import RoofzScraper
+from scrapers.vva import VVAScraper
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,10 @@ FUNDA_SOURCE = "funda"
 KAMERNET_SOURCE = "kamernet"
 HUURWONINGEN_SOURCE = "huurwoningen"
 ROOFZ_SOURCE = "roofz"
+VVA_SOURCE = "vva"
 
 FAST_SOURCES = (PARARIUS_SOURCE,)
-GENERAL_SOURCES = (FUNDA_SOURCE, KAMERNET_SOURCE, HUURWONINGEN_SOURCE)
+GENERAL_SOURCES = (FUNDA_SOURCE, KAMERNET_SOURCE, HUURWONINGEN_SOURCE, VVA_SOURCE)
 ROOFZ_SOURCES = (ROOFZ_SOURCE,)
 ALL_SOURCES = FAST_SOURCES + GENERAL_SOURCES + ROOFZ_SOURCES
 
@@ -207,6 +209,8 @@ def _build_scraper(source: str, user_filters: dict):
         )
     if source == HUURWONINGEN_SOURCE:
         return HuurwoningenScraper(**common_kwargs)
+    if source == VVA_SOURCE:
+        return VVAScraper(**common_kwargs)
     if source == ROOFZ_SOURCE:
         return RoofzScraper(**common_kwargs)
     raise ValueError(f"Unknown scraper source: {source}")
