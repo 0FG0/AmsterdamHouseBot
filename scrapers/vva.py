@@ -33,6 +33,7 @@ class VVAScraper(BaseScraper):
         city_slug = re.sub(r"[^a-z0-9]+", "-", self.city.lower()).strip("-")
         path = f"/woningaanbod/huur/{city_slug}" if city_slug else "/woningaanbod/huur"
         params = {
+            "availability": "1",
             "moveunavailablelistingstothebottom": "true",
             "orderby": "9",
             "take": str(_PAGE_SIZE),
@@ -125,6 +126,9 @@ class VVAScraper(BaseScraper):
 
     def _parse_article(self, article) -> Listing | None:
         try:
+            if _is_unavailable_article(article):
+                return None
+
             link_tag = _find_listing_link(article)
             if not link_tag:
                 return None
@@ -143,7 +147,10 @@ class VVAScraper(BaseScraper):
             address = ", ".join(part for part in address_parts if part) or self.city
 
             price = _text(article.select_one(".object__address .price, .price"))
-            object_type = _text(article.select_one(".object_type .value"))
+            object_type = _object_type(article)
+            if _is_parking_object_type(object_type):
+                return None
+
             title = street or address or object_type or f"VVA listing {listing_id}"
 
             rooms_count = _feature_number(article, "object_rooms", "kamers")
@@ -220,6 +227,52 @@ def _feature_number(article, class_name: str, tooltip: str) -> int | None:
         number = _text(feature.select_one(".number")) or _text(feature)
         return parse_first_int(number)
     return None
+
+
+def _is_unavailable_article(article) -> bool:
+    status_text = " ".join(_text(status) for status in article.select(".object__status"))
+    status_classes = " ".join(
+        class_name
+        for status in article.select(".object__status")
+        for class_name in (status.get("class") or [])
+    )
+    status = f"{status_text} {status_classes}".lower()
+    return any(
+        unavailable_term in status
+        for unavailable_term in (
+            "verhuurd",
+            "rented",
+            "niet beschikbaar",
+            "unavailable",
+            "onder optie",
+            "under option",
+        )
+    )
+
+
+def _object_type(article) -> str:
+    values = [_text(article.select_one(".object_type .value"))]
+
+    for item in article.select(".object__characteristics-item"):
+        label = _text(item.select_one(".label")).lower()
+        if label == "objecttype":
+            values.append(_text(item.select_one(".value")))
+
+    return ", ".join(value for value in values if value)
+
+
+def _is_parking_object_type(object_type: str) -> bool:
+    lower = object_type.lower()
+    return any(
+        parking_term in lower
+        for parking_term in (
+            "parkeergelegenheid",
+            "parkeerplaats",
+            "parking space",
+            "parking spot",
+            "garagebox",
+        )
+    )
 
 
 def _rooms_label(rooms_count: int | None, bedrooms_count: int | None) -> str | None:

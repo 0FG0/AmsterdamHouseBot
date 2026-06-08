@@ -40,8 +40,11 @@ class BaseScraper(ABC):
         pass
 
     def _matches_filters(self, listing: Listing) -> bool:
-        if self.max_price and listing.price_eur and listing.price_eur > self.max_price:
-            return False
+        if self.max_price:
+            if listing.price_eur is None:
+                return False
+            if listing.price_eur > self.max_price:
+                return False
         if self.min_bedrooms and listing.bedrooms is not None and listing.bedrooms < self.min_bedrooms:
             return False
         if self.min_size_m2 and listing.size_m2_value and listing.size_m2_value < self.min_size_m2:
@@ -53,7 +56,7 @@ def parse_euro_amount(text: str | None) -> int | None:
     if not text:
         return None
 
-    normalized = text.replace("\xa0", " ")
+    normalized = text.replace("\xa0", " ").replace("\u20ac", "EUR")
     patterns = (
         r"(?:€|EUR)\s*(\d[\d.,\s]*)",
         r"rent\s*price:?\s*(?:€|EUR)?\s*(\d[\d.,\s]*)",
