@@ -4,11 +4,15 @@ import re
 from collections.abc import Iterable
 from urllib.parse import urljoin, urlparse
 
+import config
 from .base import BaseScraper, Listing, parse_first_int
 
 logger = logging.getLogger(__name__)
 
 FUNDA_BASE_URL = "https://www.funda.nl"
+_FUNDA_THREAD_SEMAPHORE = asyncio.BoundedSemaphore(
+    max(1, config.FUNDA_MAX_BACKGROUND_THREADS)
+)
 
 
 class FundaScraper(BaseScraper):
@@ -22,13 +26,41 @@ class FundaScraper(BaseScraper):
             return []
 
         try:
-            listings = await asyncio.to_thread(self._scrape_sync, Funda)
+            listings = await self._scrape_in_background(Funda)
             listings = [listing for listing in listings if self._matches_filters(listing)]
             logger.info("Funda: found %d matching listings", len(listings))
             return listings
         except Exception as exc:
             logger.error("Funda scrape error: %s", exc)
             return []
+
+    async def _scrape_in_background(self, client_cls) -> list[Listing]:
+        try:
+            await asyncio.wait_for(
+                _FUNDA_THREAD_SEMAPHORE.acquire(),
+                timeout=config.FUNDA_SCRAPER_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning("Funda skipped because a previous pyfunda call is still running.")
+            return []
+
+        thread_task = asyncio.create_task(asyncio.to_thread(self._scrape_sync, client_cls))
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(thread_task),
+                timeout=config.FUNDA_PYFUNDA_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.error(
+                "Funda pyfunda call timed out after %ss; worker will finish in background.",
+                config.FUNDA_PYFUNDA_TIMEOUT_SECONDS,
+            )
+            return []
+        finally:
+            if thread_task.done():
+                _release_funda_thread_slot()
+            else:
+                thread_task.add_done_callback(lambda _: _release_funda_thread_slot())
 
     def _scrape_sync(self, client_cls) -> list[Listing]:
         filters: dict[str, object] = {
@@ -42,7 +74,11 @@ class FundaScraper(BaseScraper):
         if self.min_size_m2:
             filters["min_area"] = self.min_size_m2
 
-        with client_cls(timeout=30, max_retries=5, retry_backoff=0.2) as client:
+        with client_cls(
+            timeout=config.FUNDA_PYFUNDA_TIMEOUT_SECONDS,
+            max_retries=max(0, config.FUNDA_PYFUNDA_MAX_RETRIES),
+            retry_backoff=max(0, config.FUNDA_PYFUNDA_RETRY_BACKOFF_SECONDS),
+        ) as client:
             raw_listings = client.search(self.city.lower(), **filters)
 
         listings: list[Listing] = []
@@ -204,3 +240,10 @@ def _first_photo_url(media) -> str | None:
             if text:
                 return text
     return None
+
+
+def _release_funda_thread_slot() -> None:
+    try:
+        _FUNDA_THREAD_SEMAPHORE.release()
+    except ValueError:
+        logger.warning("Funda thread slot release was ignored because no slot was held.")

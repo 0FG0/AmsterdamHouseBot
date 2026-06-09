@@ -25,10 +25,11 @@ HUURWONINGEN_SOURCE = "huurwoningen"
 ROOFZ_SOURCE = "roofz"
 VVA_SOURCE = "vva"
 
-FAST_SOURCES = (PARARIUS_SOURCE,)
+PARARIUS_SOURCES = (PARARIUS_SOURCE,)
 GENERAL_SOURCES = (FUNDA_SOURCE, KAMERNET_SOURCE, HUURWONINGEN_SOURCE, VVA_SOURCE)
 ROOFZ_SOURCES = (ROOFZ_SOURCE,)
-ALL_SOURCES = FAST_SOURCES + GENERAL_SOURCES + ROOFZ_SOURCES
+FAST_SOURCES = PARARIUS_SOURCES + GENERAL_SOURCES + ROOFZ_SOURCES
+ALL_SOURCES = FAST_SOURCES
 
 _SCAN_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
 
@@ -85,8 +86,8 @@ async def run_scan_for_user(
 
 def enabled_all_sources() -> tuple[str, ...]:
     if config.ROOFZ_ENABLED:
-        return ALL_SOURCES
-    return FAST_SOURCES + GENERAL_SOURCES
+        return FAST_SOURCES
+    return tuple(source for source in FAST_SOURCES if source != ROOFZ_SOURCE)
 
 
 async def _scan_source_for_user(
@@ -120,22 +121,15 @@ async def _scan_source_for_user(
                 logger.info("Scan stopped for user %s/%s before sending stale results.", chat_id, source)
                 return 0
 
-            sent_listing_ids = await db.get_sent_listing_ids(
+            new_listing_ids = await db.get_unsent_listing_ids_and_mark_seen(
                 chat_id,
                 source,
-                (listing.id for listing in listings),
-            )
-            new_listings = [
-                listing
-                for listing in listings
-                if listing.id not in sent_listing_ids
-            ]
-            await db.mark_seen_many(
                 (
                     (listing.source, listing.id, listing.url, listing.title, listing.price)
-                    for listing in new_listings
-                )
+                    for listing in listings
+                ),
             )
+            new_listings = [listing for listing in listings if listing.id in new_listing_ids]
 
             delivered_listing_ids: list[str] = []
             for listing in new_listings:
@@ -228,6 +222,8 @@ def _scan_lock(chat_id: int, source: str) -> asyncio.Lock:
 def _timeout_for_source(source: str) -> int:
     if source == PARARIUS_SOURCE:
         return config.PARARIUS_SCRAPER_TIMEOUT_SECONDS
+    if source == FUNDA_SOURCE:
+        return config.FUNDA_SCRAPER_TIMEOUT_SECONDS
     if source == ROOFZ_SOURCE:
         return config.ROOFZ_SCRAPER_TIMEOUT_SECONDS
     return config.SCRAPER_TIMEOUT_SECONDS

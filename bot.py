@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
@@ -13,8 +14,8 @@ from telegram.ext import (
 import config
 import db
 from scanner import (
-    FAST_SOURCES,
     GENERAL_SOURCES,
+    PARARIUS_SOURCES,
     ROOFZ_SOURCES,
     enabled_all_sources,
     run_scan_for_user,
@@ -24,6 +25,8 @@ from scrapers.kamernet import (
     format_kamernet_property_types,
     serialize_kamernet_property_types,
 )
+from scrapers.http_clients import close_shared_clients
+from scrapers.roofz import RoofzScraper
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +49,19 @@ def create_application() -> Application:
         await db.init_db()
         logger.info("Database initialized.")
 
-    app = Application.builder().token(config.TELEGRAM_TOKEN).post_init(_post_init).build()
+    async def _post_shutdown(app: Application) -> None:
+        await RoofzScraper.close_browser()
+        await close_shared_clients()
+        await db.close_db()
+        logger.info("Scraper and database resources closed.")
+
+    app = (
+        Application.builder()
+        .token(config.TELEGRAM_TOKEN)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler(["help", "commands"], cmd_help))
@@ -68,42 +83,42 @@ def create_application() -> Application:
     )
     app.add_handler(search_conversation)
 
-    app.job_queue.run_repeating(
-        scheduled_pararius_scan,
-        interval=config.PARARIUS_POLL_INTERVAL_SECONDS,
-        first=5,
-        name="pararius-fast-scan",
-        job_kwargs=_scan_job_kwargs(config.PARARIUS_POLL_INTERVAL_SECONDS),
-    )
-    app.job_queue.run_repeating(
-        scheduled_scan,
-        interval=config.POLL_INTERVAL_SECONDS,
-        first=20,
-        name="general-scan",
-        job_kwargs=_scan_job_kwargs(config.POLL_INTERVAL_SECONDS),
-    )
-    if config.ROOFZ_ENABLED:
-        app.job_queue.run_repeating(
-            scheduled_roofz_scan,
-            interval=config.ROOFZ_POLL_INTERVAL_SECONDS,
-            first=45,
-            name="roofz-scan",
-            job_kwargs=_scan_job_kwargs(config.ROOFZ_POLL_INTERVAL_SECONDS),
-        )
+    for callback, first, name in _fast_scan_jobs():
+        _schedule_fast_scan(app, callback, first=first, name=name)
 
     return app
 
 
+def _fast_scan_jobs() -> tuple[tuple[object, int, str], ...]:
+    jobs = (
+        (scheduled_pararius_scan, 5, "pararius-fast-scan"),
+        (scheduled_general_scan, 10, "general-fast-scan"),
+    )
+    if config.ROOFZ_ENABLED:
+        jobs += ((scheduled_roofz_scan, 15, "roofz-fast-scan"),)
+    return jobs
+
+
+def _schedule_fast_scan(app: Application, callback, first: int, name: str) -> None:
+    app.job_queue.run_repeating(
+        callback,
+        interval=config.FAST_POLL_INTERVAL_SECONDS,
+        first=first,
+        name=name,
+        job_kwargs=_scan_job_kwargs(config.FAST_POLL_INTERVAL_SECONDS),
+    )
+
+
 async def scheduled_pararius_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _scheduled_scan_for_sources(context, "Pararius fast", FAST_SOURCES)
+    await _scheduled_scan_for_sources(context, "Pararius fast", PARARIUS_SOURCES)
 
 
-async def scheduled_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _scheduled_scan_for_sources(context, "General", GENERAL_SOURCES)
+async def scheduled_general_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _scheduled_scan_for_sources(context, "General fast", GENERAL_SOURCES)
 
 
 async def scheduled_roofz_scan(context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _scheduled_scan_for_sources(context, "Roofz", ROOFZ_SOURCES)
+    await _scheduled_scan_for_sources(context, "Roofz fast", ROOFZ_SOURCES)
 
 
 async def _scheduled_scan_for_sources(
@@ -114,12 +129,34 @@ async def _scheduled_scan_for_sources(
     users = await db.get_all_active_users()
     if config.TELEGRAM_ALLOWED_CHAT_IDS:
         users = [user for user in users if user["chat_id"] in config.TELEGRAM_ALLOWED_CHAT_IDS]
-    logger.info("%s scheduled scan: %d active users, sources=%s", label, len(users), ",".join(sources))
-    for user in users:
-        try:
-            await run_scan_for_user(context.bot, user, sources=sources)
-        except Exception as exc:
-            logger.error("%s scan error for user %s: %s", label, user["chat_id"], exc)
+    max_concurrent = max(1, config.MAX_CONCURRENT_USERS_PER_JOB)
+    logger.info(
+        "%s scheduled scan: %d active users, max_concurrent_users=%d, sources=%s",
+        label,
+        len(users),
+        max_concurrent,
+        ",".join(sources),
+    )
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def scan_user(user: dict) -> None:
+        async with semaphore:
+            await _run_scheduled_scan_for_user(context, label, sources, user)
+
+    await asyncio.gather(*(scan_user(user) for user in users))
+
+
+async def _run_scheduled_scan_for_user(
+    context: ContextTypes.DEFAULT_TYPE,
+    label: str,
+    sources: tuple[str, ...],
+    user: dict,
+) -> None:
+    try:
+        await run_scan_for_user(context.bot, user, sources=sources)
+    except Exception as exc:
+        logger.error("%s scan error for user %s: %s", label, user["chat_id"], exc)
 
 
 def _scan_job_kwargs(interval_seconds: int) -> dict:
@@ -515,12 +552,7 @@ def _format_interval(seconds: int) -> str:
 
 
 def _format_scan_schedule() -> str:
-    schedule = (
-        f"I scan Pararius every {_format_interval(config.PARARIUS_POLL_INTERVAL_SECONDS)}, "
-        f"Funda/Kamernet/Huurwoningen/VVA every {_format_interval(config.POLL_INTERVAL_SECONDS)}"
-    )
+    sources = "Pararius, Funda, Kamernet, Huurwoningen, and VVA"
     if config.ROOFZ_ENABLED:
-        schedule += f", and Roofz every {_format_interval(config.ROOFZ_POLL_INTERVAL_SECONDS)}."
-    else:
-        schedule += ". Roofz scanning is disabled."
-    return schedule
+        sources = "Pararius, Funda, Kamernet, Huurwoningen, VVA, and Roofz"
+    return f"I scan {sources} every {_format_interval(config.FAST_POLL_INTERVAL_SECONDS)}."

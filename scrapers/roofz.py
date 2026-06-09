@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import re
+from typing import Any
 from urllib.parse import urlparse
 
 from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
@@ -10,6 +12,12 @@ logger = logging.getLogger(__name__)
 class RoofzScraper(BaseScraper):
     SOURCE = "roofz"
     BASE_URL = "https://www.roofz.eu"
+    _browser_lock = asyncio.Lock()
+    _playwright_manager: Any = None
+    _playwright: Any = None
+    _browser: Any = None
+    _context: Any = None
+    _page: Any = None
 
     def _urls(self) -> list[str]:
         return [
@@ -26,28 +34,71 @@ class RoofzScraper(BaseScraper):
             return []
 
         listings: list[Listing] = []
-        try:
-            async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(headless=True)
-                try:
-                    page = await browser.new_page(viewport={"width": 1440, "height": 1200})
+        async with self._browser_lock:
+            try:
+                page = await self._page_for_scan(async_playwright)
 
-                    for url in self._urls():
-                        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                        await self._settle_page(page)
-                        await self._try_select_city(page)
-                        listings = await self._extract_listings(page)
-                        listings = [listing for listing in listings if self._matches_filters(listing)]
-                        if listings:
-                            break
-                finally:
-                    await browser.close()
-        except Exception as exc:
-            logger.error("Roofz scrape error: %s", exc)
-            return []
+                for url in self._urls():
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    await self._settle_page(page)
+                    await self._try_select_city(page)
+                    listings = await self._extract_listings(page)
+                    listings = [listing for listing in listings if self._matches_filters(listing)]
+                    if listings:
+                        break
+            except Exception as exc:
+                logger.error("Roofz scrape error: %s", exc)
+                await self._reset_browser(stop_playwright=True)
+                return []
 
         logger.info("Roofz: found %d matching listings", len(listings))
         return listings
+
+    @classmethod
+    async def close_browser(cls) -> None:
+        async with cls._browser_lock:
+            await cls._reset_browser(stop_playwright=True)
+
+    @classmethod
+    async def _page_for_scan(cls, playwright_factory):
+        if cls._playwright is None:
+            cls._playwright_manager = playwright_factory()
+            cls._playwright = await cls._playwright_manager.start()
+
+        if cls._browser is None or not cls._browser.is_connected():
+            await cls._reset_browser(stop_playwright=False)
+            cls._browser = await cls._playwright.chromium.launch(headless=True)
+
+        if cls._context is None:
+            cls._context = await cls._browser.new_context(viewport={"width": 1440, "height": 1200})
+
+        if cls._page is None or cls._page.is_closed():
+            cls._page = await cls._context.new_page()
+
+        return cls._page
+
+    @classmethod
+    async def _reset_browser(cls, stop_playwright: bool = False) -> None:
+        resources = (cls._page, cls._context, cls._browser)
+        cls._page = None
+        cls._context = None
+        cls._browser = None
+
+        for resource in resources:
+            if resource is None:
+                continue
+            try:
+                await resource.close()
+            except Exception:
+                pass
+
+        if stop_playwright and cls._playwright_manager is not None:
+            try:
+                await cls._playwright_manager.stop()
+            except Exception:
+                pass
+            cls._playwright_manager = None
+            cls._playwright = None
 
     async def _settle_page(self, page) -> None:
         for label in ("Accept", "Akkoord", "Allow all", "Alles accepteren"):

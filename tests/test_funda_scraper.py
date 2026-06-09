@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from scrapers.funda import FundaScraper
 
@@ -46,9 +47,10 @@ class FundaScraperTests(unittest.TestCase):
         class FakeClient:
             location = None
             filters = None
+            kwargs = None
 
             def __init__(self, **kwargs):
-                self.kwargs = kwargs
+                FakeClient.kwargs = kwargs
 
             def __enter__(self):
                 return self
@@ -68,9 +70,18 @@ class FundaScraperTests(unittest.TestCase):
             min_size_m2=50,
         )
 
-        listings = scraper._scrape_sync(FakeClient)
+        with (
+            patch("scrapers.funda.config.FUNDA_PYFUNDA_TIMEOUT_SECONDS", 8),
+            patch("scrapers.funda.config.FUNDA_PYFUNDA_MAX_RETRIES", 1),
+            patch("scrapers.funda.config.FUNDA_PYFUNDA_RETRY_BACKOFF_SECONDS", 0.05),
+        ):
+            listings = scraper._scrape_sync(FakeClient)
 
         self.assertEqual(len(listings), 1)
+        self.assertEqual(
+            FakeClient.kwargs,
+            {"timeout": 8, "max_retries": 1, "retry_backoff": 0.05},
+        )
         self.assertEqual(FakeClient.location, "amsterdam")
         self.assertEqual(
             FakeClient.filters,

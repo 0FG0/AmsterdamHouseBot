@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from scrapers.vva import VVAScraper, _page_count_from_html
 
@@ -279,15 +279,22 @@ class VVAScraperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(listings, [])
 
-    def test_page_count_uses_total_property_count_and_caps_pages(self):
+    def test_page_count_defaults_to_one_page_for_fast_scans(self):
         self.assertEqual(
             _page_count_from_html("<script>var totalPropertyCount = 34;</script>"),
-            3,
+            1,
         )
-        self.assertEqual(
-            _page_count_from_html("<script>var totalPropertyCount = 1000;</script>"),
-            20,
-        )
+
+    def test_page_count_uses_configured_cap(self):
+        with patch("scrapers.vva.config.VVA_MAX_PAGES_PER_SCAN", 20):
+            self.assertEqual(
+                _page_count_from_html("<script>var totalPropertyCount = 34;</script>"),
+                3,
+            )
+            self.assertEqual(
+                _page_count_from_html("<script>var totalPropertyCount = 1000;</script>"),
+                20,
+            )
 
 
 if __name__ == "__main__":

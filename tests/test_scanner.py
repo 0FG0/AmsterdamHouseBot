@@ -45,10 +45,40 @@ class _FakeScraper:
 class ScannerTests(unittest.IsolatedAsyncioTestCase):
     async def test_vva_is_registered_as_general_source(self):
         self.assertIn(scanner.VVA_SOURCE, scanner.GENERAL_SOURCES)
+        self.assertIn(scanner.VVA_SOURCE, scanner.FAST_SOURCES)
 
         scraper = scanner._build_scraper("vva", _filters())
 
         self.assertEqual(scraper.SOURCE, "vva")
+
+    def test_fast_sources_include_every_platform(self):
+        self.assertEqual(
+            scanner.FAST_SOURCES,
+            (
+                scanner.PARARIUS_SOURCE,
+                scanner.FUNDA_SOURCE,
+                scanner.KAMERNET_SOURCE,
+                scanner.HUURWONINGEN_SOURCE,
+                scanner.VVA_SOURCE,
+                scanner.ROOFZ_SOURCE,
+            ),
+        )
+
+    def test_enabled_all_sources_respects_roofz_flag(self):
+        with patch.object(scanner.config, "ROOFZ_ENABLED", True):
+            self.assertEqual(scanner.enabled_all_sources(), scanner.FAST_SOURCES)
+
+        with patch.object(scanner.config, "ROOFZ_ENABLED", False):
+            self.assertEqual(
+                scanner.enabled_all_sources(),
+                (
+                    scanner.PARARIUS_SOURCE,
+                    scanner.FUNDA_SOURCE,
+                    scanner.KAMERNET_SOURCE,
+                    scanner.HUURWONINGEN_SOURCE,
+                    scanner.VVA_SOURCE,
+                ),
+            )
 
     async def test_run_scan_for_user_scans_sources_concurrently_and_batches_db(self):
         started: set[str] = set()
@@ -56,8 +86,9 @@ class ScannerTests(unittest.IsolatedAsyncioTestCase):
         seen_rows = []
         sent_rows = []
 
-        async def mark_seen_many(rows):
+        async def get_unsent_listing_ids_and_mark_seen(chat_id, source, rows):
             seen_rows.extend(list(rows))
+            return {listing_id for _, listing_id, *_ in seen_rows if source in listing_id}
 
         async def mark_sent_many(chat_id, source, listing_ids):
             sent_rows.append((chat_id, source, list(listing_ids)))
@@ -68,8 +99,10 @@ class ScannerTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("scanner._scan_is_current", AsyncMock(return_value=True)),
             patch("scanner._build_scraper", side_effect=build_scraper),
-            patch("scanner.db.get_sent_listing_ids", AsyncMock(return_value=set())),
-            patch("scanner.db.mark_seen_many", AsyncMock(side_effect=mark_seen_many)),
+            patch(
+                "scanner.db.get_unsent_listing_ids_and_mark_seen",
+                AsyncMock(side_effect=get_unsent_listing_ids_and_mark_seen),
+            ),
             patch("scanner.db.mark_sent_many", AsyncMock(side_effect=mark_sent_many)),
             patch("scanner._send_notification", AsyncMock(return_value=True)),
         ):
@@ -124,8 +157,10 @@ class ScannerTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("scanner._scan_is_current", AsyncMock(return_value=True)),
             patch("scanner._build_scraper", return_value=FakeScraper()),
-            patch("scanner.db.get_sent_listing_ids", AsyncMock(return_value={"funda-1"})),
-            patch("scanner.db.mark_seen_many", AsyncMock()) as mark_seen_many,
+            patch(
+                "scanner.db.get_unsent_listing_ids_and_mark_seen",
+                AsyncMock(return_value=set()),
+            ) as get_unsent_listing_ids_and_mark_seen,
             patch("scanner.db.mark_sent_many", AsyncMock()) as mark_sent_many,
             patch("scanner._send_notification", AsyncMock()) as send_notification,
         ):
@@ -136,7 +171,7 @@ class ScannerTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(count, 0)
-        mark_seen_many.assert_awaited_once()
+        get_unsent_listing_ids_and_mark_seen.assert_awaited_once()
         mark_sent_many.assert_awaited_once()
         send_notification.assert_not_awaited()
 

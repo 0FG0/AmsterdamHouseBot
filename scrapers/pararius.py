@@ -6,6 +6,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
+from .http_clients import get_httpx_client, get_shared_session
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +15,6 @@ try:
 
     _USE_CURL = True
 except ImportError:
-    import httpx
-
     _USE_CURL = False
     logger.warning("curl_cffi is not installed; Pararius may return 403 responses.")
 
@@ -64,11 +63,14 @@ class ParariusScraper(BaseScraper):
             ("city", self._build_url()),
         )
         if _USE_CURL:
-            async with CurlAsyncSession(impersonate="chrome124") as session:
-                return await self._fetch_with_session(session, page_specs)
+            session = await get_shared_session(
+                self.SOURCE,
+                lambda: CurlAsyncSession(impersonate="chrome124"),
+            )
+            return await self._fetch_with_session(session, page_specs)
 
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            return await self._fetch_with_session(client, page_specs)
+        client = await get_httpx_client(self.SOURCE, timeout=30, follow_redirects=True)
+        return await self._fetch_with_session(client, page_specs)
 
     async def _fetch_with_session(self, session, page_specs: tuple[tuple[str, str], ...]) -> list[tuple[str, str]]:
         tasks = [

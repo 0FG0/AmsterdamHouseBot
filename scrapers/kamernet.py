@@ -4,10 +4,10 @@ import re
 from collections.abc import Iterable
 from urllib.parse import urlencode
 
-import httpx
 from bs4 import BeautifulSoup
 
 from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
+from .http_clients import get_httpx_client
 
 logger = logging.getLogger(__name__)
 
@@ -87,9 +87,9 @@ class KamernetScraper(BaseScraper):
 
     async def scrape(self) -> list[Listing]:
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                response = await client.get(self._build_url(), headers=_HEADERS)
-                response.raise_for_status()
+            client = await get_httpx_client(self.SOURCE, timeout=30, follow_redirects=True)
+            response = await client.get(self._build_url(), headers=_HEADERS)
+            response.raise_for_status()
 
             soup = BeautifulSoup(response.text, "lxml")
             listings = []

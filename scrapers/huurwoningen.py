@@ -5,6 +5,7 @@ from urllib.parse import urlencode, urljoin
 from bs4 import BeautifulSoup
 
 from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
+from .http_clients import get_httpx_client, get_shared_session
 
 logger = logging.getLogger(__name__)
 
@@ -13,8 +14,6 @@ try:
 
     _USE_CURL = True
 except ImportError:
-    import httpx
-
     _USE_CURL = False
     logger.warning("curl_cffi is not installed; Huurwoningen may return Cloudflare challenges.")
 
@@ -55,15 +54,18 @@ class HuurwoningenScraper(BaseScraper):
         try:
             url = self._build_url()
             if _USE_CURL:
-                async with CurlAsyncSession(impersonate="chrome124") as session:
-                    response = await session.get(url, headers=_HEADERS, timeout=30)
-                    response.raise_for_status()
-                    html = response.text
+                session = await get_shared_session(
+                    self.SOURCE,
+                    lambda: CurlAsyncSession(impersonate="chrome124"),
+                )
+                response = await session.get(url, headers=_HEADERS, timeout=30)
+                response.raise_for_status()
+                html = response.text
             else:
-                async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                    response = await client.get(url, headers=_HEADERS)
-                    response.raise_for_status()
-                    html = response.text
+                client = await get_httpx_client(self.SOURCE, timeout=30, follow_redirects=True)
+                response = await client.get(url, headers=_HEADERS)
+                response.raise_for_status()
+                html = response.text
 
             soup = BeautifulSoup(html, "lxml")
             listings = [

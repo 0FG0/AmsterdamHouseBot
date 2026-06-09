@@ -15,7 +15,7 @@ The bot stores user filters and already-seen listings in SQLite, so duplicate li
 
 ## What it does
 
-- Runs Pararius on a fast scan loop, Funda/Kamernet/Huurwoningen/VVA on the general loop, and Roofz on a slower isolated loop
+- Runs every enabled platform on the same fast scan cadence
 - Checks both the Amsterdam Pararius search page and Pararius' public newest-rentals feed
 - Lets each Telegram user save their own Kamernet property types, rent, bedroom/room, and surface-area filters
 - Sends new listings directly in Telegram
@@ -70,28 +70,43 @@ Create a `.env` file in the project root with the following content:
 
 ```env
 TELEGRAM_TOKEN=123456789:replace-with-your-real-token
-POLL_INTERVAL_SECONDS=120
-PARARIUS_POLL_INTERVAL_SECONDS=60
-ROOFZ_POLL_INTERVAL_SECONDS=900
+FAST_POLL_INTERVAL_SECONDS=60
 SCRAPER_TIMEOUT_SECONDS=45
 PARARIUS_SCRAPER_TIMEOUT_SECONDS=20
+FUNDA_SCRAPER_TIMEOUT_SECONDS=25
+FUNDA_PYFUNDA_TIMEOUT_SECONDS=12
+FUNDA_PYFUNDA_MAX_RETRIES=2
+FUNDA_PYFUNDA_RETRY_BACKOFF_SECONDS=0.1
+FUNDA_MAX_BACKGROUND_THREADS=1
 ROOFZ_SCRAPER_TIMEOUT_SECONDS=90
 ROOFZ_ENABLED=true
+VVA_MAX_PAGES_PER_SCAN=1
+MAX_CONCURRENT_USERS_PER_JOB=3
 DB_PATH=listings.db
+SQLITE_BUSY_TIMEOUT_MS=5000
 TELEGRAM_ALLOWED_CHAT_IDS=123456789
 ```
 
 Environment variables:
 
 - `TELEGRAM_TOKEN`: required, Telegram bot token from BotFather
-- `POLL_INTERVAL_SECONDS`: optional, general scan interval for Funda, Kamernet, Huurwoningen, and VVA, defaults to `300`
-- `PARARIUS_POLL_INTERVAL_SECONDS`: optional, fast Pararius scan interval, defaults to the lower of `POLL_INTERVAL_SECONDS` and `60`
-- `ROOFZ_POLL_INTERVAL_SECONDS`: optional, isolated Roofz scan interval, defaults to the higher of `POLL_INTERVAL_SECONDS * 5` and `900`
+- `FAST_POLL_INTERVAL_SECONDS`: optional, scan interval for every enabled platform, defaults to `PARARIUS_POLL_INTERVAL_SECONDS` when set, otherwise the lower of `POLL_INTERVAL_SECONDS` and `60`
+- `POLL_INTERVAL_SECONDS`: optional, legacy fallback used only to derive `FAST_POLL_INTERVAL_SECONDS`, defaults to `300`
+- `PARARIUS_POLL_INTERVAL_SECONDS`: optional, legacy fallback for `FAST_POLL_INTERVAL_SECONDS`
+- `ROOFZ_POLL_INTERVAL_SECONDS`: deprecated; Roofz now uses the same fast interval as every other enabled platform
 - `SCRAPER_TIMEOUT_SECONDS`: optional, timeout for general scrapers, defaults to `45`
 - `PARARIUS_SCRAPER_TIMEOUT_SECONDS`: optional, timeout for Pararius, defaults to `20`
+- `FUNDA_SCRAPER_TIMEOUT_SECONDS`: optional, outer timeout for Funda scans, defaults to `25`
+- `FUNDA_PYFUNDA_TIMEOUT_SECONDS`: optional, timeout passed to `pyfunda`, defaults to `12`
+- `FUNDA_PYFUNDA_MAX_RETRIES`: optional, retry count passed to `pyfunda`, defaults to `2`
+- `FUNDA_PYFUNDA_RETRY_BACKOFF_SECONDS`: optional, retry backoff passed to `pyfunda`, defaults to `0.1`
+- `FUNDA_MAX_BACKGROUND_THREADS`: optional, max active `pyfunda` worker threads, defaults to `1`
 - `ROOFZ_SCRAPER_TIMEOUT_SECONDS`: optional, timeout for Roofz browser automation, defaults to `90`
 - `ROOFZ_ENABLED`: optional, set to `false` to disable Roofz, defaults to `true`
+- `VVA_MAX_PAGES_PER_SCAN`: optional, max VVA result pages fetched per scan, defaults to `1`
+- `MAX_CONCURRENT_USERS_PER_JOB`: optional, active users scanned in parallel per scheduled job, defaults to `3`
 - `DB_PATH`: optional, SQLite database path, defaults to `listings.db`
+- `SQLITE_BUSY_TIMEOUT_MS`: optional, SQLite lock wait timeout, defaults to `5000`
 - `TELEGRAM_ALLOWED_CHAT_IDS`: optional, comma-separated Telegram chat IDs allowed to use the bot. Leave empty for local unrestricted use.
 
 ### 5. Start the bot
@@ -145,7 +160,7 @@ After that, the scheduled scanner will keep running in the background while the 
 
 1. `main.py` starts the Telegram application.
 2. `bot.py` registers commands and schedules the recurring scan job.
-3. `scanner.py` runs selected scrapers for each active user, with Pararius, general sources, and Roofz scheduled separately.
+3. `scanner.py` runs selected scrapers for each active user, with all enabled source groups scheduled on the same fast cadence.
 4. `db.py` stores filters and deduplicates listings in SQLite.
 
 ## Project Structure
@@ -161,6 +176,7 @@ After that, the scheduled scanner will keep running in the background while the 
 |-- scrapers/
 |   |-- base.py
 |   |-- funda.py
+|   |-- http_clients.py
 |   |-- huurwoningen.py
 |   |-- kamernet.py
 |   |-- pararius.py

@@ -7,7 +7,9 @@ from urllib.parse import urlencode, urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+import config
 from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
+from .http_clients import get_httpx_client
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,6 @@ _HEADERS = {
 }
 
 _PAGE_SIZE = 16
-_MAX_PAGES = 20
 
 
 class VVAScraper(BaseScraper):
@@ -58,16 +59,16 @@ class VVAScraper(BaseScraper):
 
     async def _fetch_pages(self) -> list[tuple[str, str]]:
         first_url = self._build_url()
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            first_html = await self._fetch_page(client, first_url)
-            page_urls = self._page_urls_from_html(first_html)
-            rest_urls = page_urls[1:]
+        client = await get_httpx_client(self.SOURCE, timeout=30, follow_redirects=True)
+        first_html = await self._fetch_page(client, first_url)
+        page_urls = self._page_urls_from_html(first_html)
+        rest_urls = page_urls[1:]
 
-            tasks = [
-                asyncio.create_task(self._fetch_page(client, url))
-                for url in rest_urls
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [
+            asyncio.create_task(self._fetch_page(client, url))
+            for url in rest_urls
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         pages = [(first_url, first_html)]
         for url, result in zip(rest_urls, results, strict=True):
@@ -315,10 +316,11 @@ def _first_srcset_url(srcset: str | None) -> str | None:
     return first_candidate.split(" ", 1)[0] if first_candidate else None
 
 
-def _page_count_from_html(html: str) -> int:
+def _page_count_from_html(html: str, max_pages: int | None = None) -> int:
+    max_pages = _effective_max_pages(max_pages)
     total_count = _total_count_from_html(html)
     if total_count is not None:
-        return max(1, min(_MAX_PAGES, math.ceil(total_count / _PAGE_SIZE)))
+        return max(1, min(max_pages, math.ceil(total_count / _PAGE_SIZE)))
 
     soup = BeautifulSoup(html, "lxml")
     page_numbers = [
@@ -326,7 +328,13 @@ def _page_count_from_html(html: str) -> int:
         for link in soup.select(".sys_paging[pagenumber]")
         if (page_number := parse_first_int(link.get("pagenumber"))) is not None
     ]
-    return max(1, min(_MAX_PAGES, max(page_numbers, default=1)))
+    return max(1, min(max_pages, max(page_numbers, default=1)))
+
+
+def _effective_max_pages(max_pages: int | None) -> int:
+    if max_pages is None:
+        max_pages = config.VVA_MAX_PAGES_PER_SCAN
+    return max(1, int(max_pages))
 
 
 def _total_count_from_html(html: str) -> int | None:

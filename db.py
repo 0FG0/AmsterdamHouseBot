@@ -1,14 +1,61 @@
+import asyncio
+from contextlib import asynccontextmanager
 import json
 from collections.abc import Iterable
 
 import aiosqlite
 
+import config
 from config import DB_PATH
 from scrapers.kamernet import serialize_kamernet_property_types
 
+_DB: aiosqlite.Connection | None = None
+_DB_CONNECT_LOCK = asyncio.Lock()
+_DB_OPERATION_LOCK = asyncio.Lock()
+
+
+async def _get_db() -> aiosqlite.Connection:
+    global _DB
+    if _DB is not None:
+        return _DB
+
+    async with _DB_CONNECT_LOCK:
+        if _DB is None:
+            _DB = await aiosqlite.connect(DB_PATH, timeout=_sqlite_timeout_seconds())
+            _DB.row_factory = aiosqlite.Row
+            await _configure_connection(_DB)
+        return _DB
+
+
+async def _configure_connection(db: aiosqlite.Connection) -> None:
+    await db.execute(f"PRAGMA busy_timeout = {max(1, config.SQLITE_BUSY_TIMEOUT_MS)}")
+    async with db.execute("PRAGMA journal_mode=WAL") as cur:
+        await cur.fetchone()
+
+
+def _sqlite_timeout_seconds() -> float:
+    return max(0.001, config.SQLITE_BUSY_TIMEOUT_MS / 1000)
+
+
+@asynccontextmanager
+async def _db_operation():
+    db = await _get_db()
+    async with _DB_OPERATION_LOCK:
+        yield db
+
+
+async def close_db() -> None:
+    global _DB
+    async with _DB_CONNECT_LOCK:
+        if _DB is None:
+            return
+        async with _DB_OPERATION_LOCK:
+            await _DB.close()
+            _DB = None
+
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _db_operation() as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS seen_listings (
                 source      TEXT NOT NULL,
@@ -68,7 +115,7 @@ async def mark_seen_many(rows: Iterable[tuple[str, str, str, str, str]]) -> None
     if not values:
         return
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _db_operation() as db:
         await db.executemany(
             "INSERT OR IGNORE INTO seen_listings (source, listing_id, url, title, price) VALUES (?,?,?,?,?)",
             values,
@@ -76,8 +123,20 @@ async def mark_seen_many(rows: Iterable[tuple[str, str, str, str, str]]) -> None
         await db.commit()
 
 
+def _unique_listing_rows(rows: Iterable[tuple[str, str, str, str, str]]) -> list[tuple[str, str, str, str, str]]:
+    values: list[tuple[str, str, str, str, str]] = []
+    seen_ids: set[tuple[str, str]] = set()
+    for source, listing_id, url, title, price in rows:
+        key = (source, listing_id)
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
+        values.append((source, listing_id, url, title, price))
+    return values
+
+
 async def was_sent(chat_id: int, source: str, listing_id: str) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _db_operation() as db:
         async with db.execute(
             "SELECT 1 FROM sent_listings WHERE chat_id=? AND source=? AND listing_id=?",
             (chat_id, source, listing_id),
@@ -95,10 +154,45 @@ async def get_sent_listing_ids(chat_id: int, source: str, listing_ids: Iterable[
         "SELECT listing_id FROM sent_listings "
         f"WHERE chat_id=? AND source=? AND listing_id IN ({placeholders})"
     )
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _db_operation() as db:
         async with db.execute(query, (chat_id, source, *ids)) as cur:
             rows = await cur.fetchall()
             return {row[0] for row in rows}
+
+
+async def get_unsent_listing_ids_and_mark_seen(
+    chat_id: int,
+    source: str,
+    rows: Iterable[tuple[str, str, str, str, str]],
+) -> set[str]:
+    values = _unique_listing_rows(rows)
+    if not values:
+        return set()
+
+    ids = [listing_id for _, listing_id, *_ in values]
+    placeholders = ",".join("?" for _ in ids)
+    query = (
+        "SELECT listing_id FROM sent_listings "
+        f"WHERE chat_id=? AND source=? AND listing_id IN ({placeholders})"
+    )
+
+    async with _db_operation() as db:
+        async with db.execute(query, (chat_id, source, *ids)) as cur:
+            sent_ids = {row[0] for row in await cur.fetchall()}
+
+        unsent_values = [
+            value
+            for value in values
+            if value[1] not in sent_ids
+        ]
+        if unsent_values:
+            await db.executemany(
+                "INSERT OR IGNORE INTO seen_listings (source, listing_id, url, title, price) VALUES (?,?,?,?,?)",
+                unsent_values,
+            )
+        await db.commit()
+
+    return {listing_id for _, listing_id, *_ in unsent_values}
 
 
 async def mark_sent(chat_id: int, source: str, listing_id: str) -> None:
@@ -110,7 +204,7 @@ async def mark_sent_many(chat_id: int, source: str, listing_ids: Iterable[str]) 
     if not ids:
         return
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _db_operation() as db:
         await db.executemany(
             "INSERT OR IGNORE INTO sent_listings (chat_id, source, listing_id) VALUES (?, ?, ?)",
             [(chat_id, source, listing_id) for listing_id in ids],
@@ -128,7 +222,7 @@ async def save_filters(
     active: bool = True,
 ):
     kamernet_property_type = serialize_kamernet_property_types(kamernet_property_type)
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _db_operation() as db:
         await db.execute("""
             INSERT INTO user_filters (chat_id, city, max_price, min_rooms, min_bedrooms, min_size_m2, kamernet_property_type, neighborhoods, active, setup_in_progress)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
@@ -157,8 +251,7 @@ async def save_filters(
 
 
 async def get_filters(chat_id: int) -> dict | None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    async with _db_operation() as db:
         async with db.execute("SELECT * FROM user_filters WHERE chat_id=?", (chat_id,)) as cur:
             row = await cur.fetchone()
             if not row:
@@ -177,7 +270,7 @@ async def get_filters(chat_id: int) -> dict | None:
 
 
 async def set_active(chat_id: int, active: bool):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _db_operation() as db:
         await db.execute("""
             INSERT INTO user_filters (chat_id, active)
             VALUES (?, ?)
@@ -189,7 +282,7 @@ async def set_active(chat_id: int, active: bool):
 
 
 async def set_setup_in_progress(chat_id: int, setup_in_progress: bool) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _db_operation() as db:
         await db.execute(
             """
             UPDATE user_filters
@@ -202,7 +295,7 @@ async def set_setup_in_progress(chat_id: int, setup_in_progress: bool) -> None:
 
 
 async def clear_seen(source: str | None = None):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _db_operation() as db:
         if source:
             await db.execute("DELETE FROM seen_listings WHERE source=?", (source,))
             await db.execute("DELETE FROM sent_listings WHERE source=?", (source,))
@@ -213,8 +306,7 @@ async def clear_seen(source: str | None = None):
 
 
 async def get_all_active_users() -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    async with _db_operation() as db:
         async with db.execute(
             "SELECT * FROM user_filters WHERE active=1 AND setup_in_progress=0"
         ) as cur:
