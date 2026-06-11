@@ -61,6 +61,20 @@ async def get_shared_session(name: str, factory: Callable[[], Any]) -> Any:
         return session
 
 
+async def close_httpx_client(name: str) -> None:
+    key = _key(f"httpx:{name}")
+    async with _lock_for(key):
+        client = _HTTPX_CLIENTS.pop(key, None)
+    await _close_resource(client, "HTTP client")
+
+
+async def close_shared_session(name: str) -> None:
+    key = _key(f"session:{name}")
+    async with _lock_for(key):
+        session = _SHARED_SESSIONS.pop(key, None)
+    await _close_resource(session, "HTTP session")
+
+
 async def close_shared_clients() -> None:
     clients = list(_HTTPX_CLIENTS.values())
     sessions = list(_SHARED_SESSIONS.values())
@@ -69,18 +83,23 @@ async def close_shared_clients() -> None:
     _LOCKS.clear()
 
     for client in clients:
-        try:
-            await client.aclose()
-        except Exception as exc:
-            logger.warning("Failed to close shared HTTP client: %s", exc)
+        await _close_resource(client, "HTTP client")
 
     for session in sessions:
-        close = getattr(session, "aclose", None) or getattr(session, "close", None)
-        if close is None:
-            continue
-        try:
-            result = close()
-            if asyncio.iscoroutine(result):
-                await result
-        except Exception as exc:
-            logger.warning("Failed to close shared HTTP session: %s", exc)
+        await _close_resource(session, "HTTP session")
+
+
+async def _close_resource(resource: Any, label: str) -> None:
+    if resource is None:
+        return
+
+    close = getattr(resource, "aclose", None) or getattr(resource, "close", None)
+    if close is None:
+        return
+
+    try:
+        result = close()
+        if asyncio.iscoroutine(result):
+            await result
+    except Exception as exc:
+        logger.warning("Failed to close shared %s: %s", label, exc)

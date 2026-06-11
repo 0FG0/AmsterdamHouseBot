@@ -52,6 +52,10 @@ function Copy-FilteredProject {
             continue
         }
 
+        if ($item.Name -like "*.db-*" -or $item.Name -like "*.sqlite3-*") {
+            continue
+        }
+
         if ($excludedExtensions -contains $item.Extension) {
             continue
         }

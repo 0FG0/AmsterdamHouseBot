@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from scrapers.pararius import ParariusScraper
 
@@ -94,6 +94,36 @@ class ParariusScraperTests(unittest.IsolatedAsyncioTestCase):
         listings = await scraper.scrape()
 
         self.assertEqual(listings, [])
+
+    async def test_forbidden_response_resets_shared_transport(self):
+        scraper = ParariusScraper(
+            city="Amsterdam",
+            max_price=2000,
+            min_bedrooms=1,
+            min_size_m2=0,
+        )
+
+        class ForbiddenResponse:
+            text = ""
+
+            def raise_for_status(self):
+                raise RuntimeError("HTTP Error 403:")
+
+        class FakeSession:
+            async def get(self, *args, **kwargs):
+                return ForbiddenResponse()
+
+        with (
+            patch("scrapers.pararius._USE_CURL", True),
+            patch("scrapers.pararius.close_shared_session", AsyncMock()) as close_shared_session,
+        ):
+            pages = await scraper._fetch_with_session(
+                FakeSession(),
+                (("city", "https://example.test/city"),),
+            )
+
+        self.assertEqual(pages, [])
+        close_shared_session.assert_awaited_once_with("pararius")
 
 
 if __name__ == "__main__":

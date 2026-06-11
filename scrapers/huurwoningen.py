@@ -5,7 +5,7 @@ from urllib.parse import urlencode, urljoin
 from bs4 import BeautifulSoup
 
 from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
-from .http_clients import get_httpx_client, get_shared_session
+from .http_clients import close_httpx_client, close_shared_session, get_httpx_client, get_shared_session
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +76,17 @@ class HuurwoningenScraper(BaseScraper):
             logger.info("Huurwoningen: found %d matching listings from %s", len(listings), url)
             return listings
         except Exception as exc:
+            if _is_forbidden_error(exc):
+                await self._reset_shared_transport_after_forbidden()
             logger.error("Huurwoningen scrape error: %s", exc)
             return []
+
+    async def _reset_shared_transport_after_forbidden(self) -> None:
+        if _USE_CURL:
+            await close_shared_session(self.SOURCE)
+        else:
+            await close_httpx_client(self.SOURCE)
+        logger.info("Huurwoningen shared HTTP transport reset after a 403 response.")
 
     def _parse_article(self, article) -> Listing | None:
         try:
@@ -153,3 +162,10 @@ def _pick_image_url(article) -> str | None:
 
     first_candidate = source.get("srcset", "").split(",", 1)[0].strip()
     return first_candidate.split(" ", 1)[0] if first_candidate else None
+
+
+def _is_forbidden_error(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) == 403:
+        return True
+    return "HTTP Error 403" in str(exc) or "403 Forbidden" in str(exc)

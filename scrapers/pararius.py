@@ -6,7 +6,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
-from .http_clients import get_httpx_client, get_shared_session
+from .http_clients import close_httpx_client, close_shared_session, get_httpx_client, get_shared_session
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +80,15 @@ class ParariusScraper(BaseScraper):
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         pages: list[tuple[str, str]] = []
+        saw_forbidden = False
         for (label, url), result in zip(page_specs, results, strict=True):
             if isinstance(result, Exception):
+                saw_forbidden = saw_forbidden or _is_forbidden_error(result)
                 logger.warning("Pararius %s page failed from %s: %s", label, url, result)
                 continue
             pages.append((label, result))
+        if saw_forbidden:
+            await self._reset_shared_transport_after_forbidden()
         return pages
 
     async def _fetch_page(self, session, label: str, url: str) -> str:
@@ -95,6 +99,13 @@ class ParariusScraper(BaseScraper):
         response.raise_for_status()
         logger.info("Pararius %s page fetched from %s", label, url)
         return response.text
+
+    async def _reset_shared_transport_after_forbidden(self) -> None:
+        if _USE_CURL:
+            await close_shared_session(self.SOURCE)
+        else:
+            await close_httpx_client(self.SOURCE)
+        logger.info("Pararius shared HTTP transport reset after a 403 response.")
 
     def _parse_pages(self, pages: list[tuple[str, str]]) -> list[Listing]:
         listings: list[Listing] = []
@@ -273,3 +284,10 @@ def _image_url(image) -> str | None:
     if not image:
         return None
     return image.get("src") or image.get("data-src") or image.get("data-lazy-src")
+
+
+def _is_forbidden_error(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) == 403:
+        return True
+    return "HTTP Error 403" in str(exc) or "403 Forbidden" in str(exc)
