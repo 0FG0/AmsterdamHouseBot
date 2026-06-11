@@ -143,8 +143,22 @@ async def _send_with_page(
     page_text = await _body_text(page)
     if _contains_captcha(page_text):
         return FundaAutoReplyResult(listing.id, "captcha", "Funda asked for human verification")
+    if _page_not_found(page_text):
+        return FundaAutoReplyResult(listing.id, "page_not_found", "Funda returned a page-not-found screen")
 
     contact_form = await _find_contact_form(page)
+    if contact_form is None and await _open_contact_flow(page):
+        page_text = await _body_text(page)
+        if _contains_captcha(page_text):
+            return FundaAutoReplyResult(listing.id, "captcha", "Funda asked for human verification")
+        if _page_not_found(page_text):
+            return FundaAutoReplyResult(
+                listing.id,
+                "page_not_found",
+                "Funda returned a page-not-found screen after opening the contact flow",
+            )
+        contact_form = await _find_contact_form(page)
+
     if contact_form is None:
         return FundaAutoReplyResult(
             listing.id,
@@ -199,6 +213,8 @@ async def _send_with_page(
     page_text = await _body_text(page)
     if _contains_captcha(page_text):
         return FundaAutoReplyResult(listing.id, "captcha", "Funda asked for human verification")
+    if _page_not_found(page_text):
+        return FundaAutoReplyResult(listing.id, "page_not_found", "Funda returned a page-not-found screen")
     if _send_failed(page_text):
         return FundaAutoReplyResult(listing.id, "submit_failed", "Funda did not accept the form")
     if _send_confirmed(page_text):
@@ -250,6 +266,48 @@ async def _find_contact_form(page):
                 continue
             if await _looks_like_contact_form(container):
                 return container
+    return None
+
+
+async def _open_contact_flow(page) -> bool:
+    scopes = [page]
+    main = page.locator("main")
+    try:
+        if await main.count() and await main.first.is_visible():
+            scopes.insert(0, main)
+    except Exception:
+        pass
+
+    for scope in scopes:
+        for role in ("button", "link"):
+            action = await _find_contact_action(scope, role)
+            if action is None:
+                continue
+            try:
+                await action.click(timeout=6000)
+                await _settle_page(page)
+                return True
+            except Exception:
+                continue
+    return False
+
+
+async def _find_contact_action(scope, role: str):
+    patterns = (
+        r"reageer",
+        r"bezichtig",
+        r"stuur.*bericht|bericht.*sturen",
+        r"neem contact op|contact opnemen|contact met|contacteer",
+        r"aanvraag|interesse",
+        r"contact landlord|contact broker|send.*message|message.*send",
+    )
+    for pattern in patterns:
+        candidate = await _first_visible_locator(
+            scope.get_by_role(role, name=re.compile(pattern, re.I)),
+            limit=8,
+        )
+        if candidate is not None:
+            return candidate
     return None
 
 
@@ -399,10 +457,27 @@ def _contains_captcha(text: str) -> bool:
         phrase in normalized
         for phrase in (
             "captcha",
+            "je bent bijna op de pagina die je zoekt",
+            "we houden ons platform graag veilig en spamvrij",
+            "verifiëren dat onze bezoekers echte mensen zijn",
+            "verifieren dat onze bezoekers echte mensen zijn",
             "verify you are human",
             "checking your browser",
             "unusual traffic",
             "controleer of je een mens bent",
+        )
+    )
+
+
+def _page_not_found(text: str) -> bool:
+    normalized = text.lower()
+    return any(
+        phrase in normalized
+        for phrase in (
+            "deze pagina kunnen we niet vinden",
+            "de door jou opgevraagde pagina is niet",
+            "page not found",
+            "pagina niet gevonden",
         )
     )
 

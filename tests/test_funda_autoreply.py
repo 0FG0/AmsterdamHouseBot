@@ -120,12 +120,66 @@ class FundaAutoReplySenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.sent)
         self.assertEqual(result.status, "submit_failed")
 
+    async def test_send_with_page_reports_funda_verification_as_captcha(self):
+        page = _FakePage(["Je bent bijna op de pagina die je zoekt"])
+
+        with (
+            patch("funda_autoreply._settle_page", AsyncMock()),
+            patch("funda_autoreply._find_contact_form", AsyncMock()) as find_form,
+            patch("funda_autoreply._open_contact_flow", AsyncMock()) as open_flow,
+        ):
+            result = await funda_autoreply._send_with_page(page, _listing(), "Hello", _contact())
+
+        self.assertFalse(result.sent)
+        self.assertEqual(result.status, "captcha")
+        find_form.assert_not_awaited()
+        open_flow.assert_not_awaited()
+
+    async def test_send_with_page_reports_funda_404_as_page_not_found(self):
+        page = _FakePage(["Deze pagina kunnen we niet vinden"])
+
+        with (
+            patch("funda_autoreply._settle_page", AsyncMock()),
+            patch("funda_autoreply._find_contact_form", AsyncMock()) as find_form,
+            patch("funda_autoreply._open_contact_flow", AsyncMock()) as open_flow,
+        ):
+            result = await funda_autoreply._send_with_page(page, _listing(), "Hello", _contact())
+
+        self.assertFalse(result.sent)
+        self.assertEqual(result.status, "page_not_found")
+        find_form.assert_not_awaited()
+        open_flow.assert_not_awaited()
+
+    async def test_send_with_page_opens_contact_flow_before_filling_form(self):
+        page = _FakePage(["Listing body", "Contact form", "Bedankt, je aanvraag is verzonden"])
+        form = object()
+        field = SimpleNamespace(fill=AsyncMock())
+        send_button = SimpleNamespace(click=AsyncMock())
+
+        with (
+            patch("funda_autoreply._settle_page", AsyncMock()),
+            patch("funda_autoreply._find_contact_form", AsyncMock(side_effect=[None, form])) as find_form,
+            patch("funda_autoreply._open_contact_flow", AsyncMock(return_value=True)) as open_flow,
+            patch("funda_autoreply._find_message_editor", AsyncMock(return_value=field)),
+            patch("funda_autoreply._find_email_input", AsyncMock(return_value=field)),
+            patch("funda_autoreply._find_labelled_input", AsyncMock(return_value=field)),
+            patch("funda_autoreply._find_phone_input", AsyncMock(return_value=field)),
+            patch("funda_autoreply._find_send_button", AsyncMock(return_value=send_button)),
+        ):
+            result = await funda_autoreply._send_with_page(page, _listing(), "Hello", _contact())
+
+        self.assertTrue(result.sent)
+        self.assertEqual(result.status, "sent")
+        self.assertEqual(find_form.await_count, 2)
+        open_flow.assert_awaited_once_with(page)
+
     async def test_send_with_page_stops_when_contact_form_is_missing(self):
         page = _FakePage(["Listing body"])
 
         with (
             patch("funda_autoreply._settle_page", AsyncMock()),
             patch("funda_autoreply._find_contact_form", AsyncMock(return_value=None)),
+            patch("funda_autoreply._open_contact_flow", AsyncMock(return_value=False)),
             patch("funda_autoreply._find_message_editor", AsyncMock()) as find_editor,
         ):
             result = await funda_autoreply._send_with_page(page, _listing(), "Hello", _contact())

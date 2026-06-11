@@ -19,6 +19,7 @@ _FUNDA_RETRYABLE_AUTOREPLY_STATUSES = {
     "empty_message",
     "error",
     "form_not_found",
+    "page_not_found",
     "playwright_missing",
     "send_button_not_found",
     "sent_unconfirmed",

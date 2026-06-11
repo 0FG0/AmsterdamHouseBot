@@ -70,16 +70,19 @@ class FundaScraper(BaseScraper):
         if self.max_price:
             filters["max_price"] = self.max_price
         if self.min_bedrooms:
-            filters["min_rooms"] = self.min_bedrooms
+            filters["min_bedrooms"] = self.min_bedrooms
         if self.min_size_m2:
             filters["min_area"] = self.min_size_m2
 
+        max_pages = max(1, config.FUNDA_MAX_PAGES_PER_SCAN)
         with client_cls(
             timeout=config.FUNDA_PYFUNDA_TIMEOUT_SECONDS,
             max_retries=max(0, config.FUNDA_PYFUNDA_MAX_RETRIES),
             retry_backoff=max(0, config.FUNDA_PYFUNDA_RETRY_BACKOFF_SECONDS),
         ) as client:
-            raw_listings = client.search(self.city.lower(), **filters)
+            raw_listings = list(
+                client.iter_search(self.city.lower(), max_pages=max_pages, **filters)
+            )
 
         listings: list[Listing] = []
         seen_ids: set[str] = set()
@@ -125,7 +128,7 @@ class FundaScraper(BaseScraper):
             rooms=rooms_label,
             size_m2=size_label,
             price_eur=price_eur,
-            bedrooms=rooms_count or bedrooms_count,
+            bedrooms=bedrooms_count,
             size_m2_value=size_value,
         )
 

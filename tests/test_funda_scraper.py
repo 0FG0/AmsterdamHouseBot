@@ -36,18 +36,19 @@ class FundaScraperTests(unittest.TestCase):
         self.assertEqual(listing.url, "https://www.funda.nl/detail/huur/amsterdam/example/12345678/")
         self.assertEqual(listing.price_eur, 1850)
         self.assertEqual(listing.rooms, "2 rooms, 1 bedroom")
-        self.assertEqual(listing.bedrooms, 2)
+        self.assertEqual(listing.bedrooms, 1)
         self.assertEqual(listing.size_m2, "55 m2")
         self.assertEqual(listing.size_m2_value, 55)
         self.assertEqual(listing.image_url, "https://images.example/funda.jpg")
 
-    def test_scrape_sync_uses_rental_filters_and_deduplicates(self):
+    def test_scrape_sync_uses_rental_filters_pages_and_deduplicates(self):
         raw_listing = _raw_listing()
 
         class FakeClient:
             location = None
             filters = None
             kwargs = None
+            max_pages = None
 
             def __init__(self, **kwargs):
                 FakeClient.kwargs = kwargs
@@ -58,9 +59,10 @@ class FundaScraperTests(unittest.TestCase):
             def __exit__(self, *_):
                 pass
 
-            def search(self, location, **filters):
+            def iter_search(self, location, *, max_pages, **filters):
                 FakeClient.location = location
                 FakeClient.filters = filters
+                FakeClient.max_pages = max_pages
                 return [raw_listing, raw_listing]
 
         scraper = FundaScraper(
@@ -74,6 +76,7 @@ class FundaScraperTests(unittest.TestCase):
             patch("scrapers.funda.config.FUNDA_PYFUNDA_TIMEOUT_SECONDS", 8),
             patch("scrapers.funda.config.FUNDA_PYFUNDA_MAX_RETRIES", 1),
             patch("scrapers.funda.config.FUNDA_PYFUNDA_RETRY_BACKOFF_SECONDS", 0.05),
+            patch("scrapers.funda.config.FUNDA_MAX_PAGES_PER_SCAN", 6),
         ):
             listings = scraper._scrape_sync(FakeClient)
 
@@ -83,16 +86,24 @@ class FundaScraperTests(unittest.TestCase):
             {"timeout": 8, "max_retries": 1, "retry_backoff": 0.05},
         )
         self.assertEqual(FakeClient.location, "amsterdam")
+        self.assertEqual(FakeClient.max_pages, 6)
         self.assertEqual(
             FakeClient.filters,
             {
                 "category": "rent",
                 "sort": "newest",
                 "max_price": 2000,
-                "min_rooms": 2,
+                "min_bedrooms": 2,
                 "min_area": 50,
             },
         )
+
+    def test_convert_listing_keeps_bedrooms_separate_from_total_rooms(self):
+        listing = FundaScraper()._convert_listing(_raw_listing(rooms_count=1, bedrooms=0))
+
+        self.assertEqual(listing.rooms, "1 room")
+        self.assertEqual(listing.bedrooms, 0)
+        self.assertFalse(FundaScraper(min_bedrooms=1)._matches_filters(listing))
 
     def test_convert_listing_expands_relative_urls(self):
         listing = FundaScraper()._convert_listing(
