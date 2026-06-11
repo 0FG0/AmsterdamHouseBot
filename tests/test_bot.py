@@ -66,18 +66,6 @@ class BotScheduleTests(unittest.TestCase):
         )
 
 
-class BotFundaAutoreplyTests(unittest.TestCase):
-    def test_parse_funda_autoreply_contact_requires_four_semicolon_parts(self):
-        self.assertEqual(
-            bot._parse_funda_autoreply_contact(
-                "person@example.test; First; Last; +31612345678"
-            ),
-            ("person@example.test", "First", "Last", "+31612345678"),
-        )
-        self.assertIsNone(bot._parse_funda_autoreply_contact("person@example.test; First"))
-        self.assertIsNone(bot._parse_funda_autoreply_contact("not-an-email; First; Last; Phone"))
-
-
 class BotAutoreplyCommandTests(unittest.IsolatedAsyncioTestCase):
     def _update(self, text: str = ""):
         return SimpleNamespace(
@@ -110,22 +98,6 @@ class BotAutoreplyCommandTests(unittest.IsolatedAsyncioTestCase):
 
         set_enabled.assert_not_awaited()
         update.message.reply_text.assert_awaited_once_with("Set your filters first with /search.")
-
-    async def test_funda_autoreply_contact_requires_saved_filters_before_writing(self):
-        update = self._update(
-            "/funda_autoreply_contact person@example.test; First; Last; +31612345678"
-        )
-
-        with (
-            patch("bot._ensure_authorized", AsyncMock(return_value=True)),
-            patch("bot.db.get_filters", AsyncMock(return_value=None)),
-            patch("bot.db.set_funda_autoreply_contact", AsyncMock()) as set_contact,
-        ):
-            await bot.cmd_funda_autoreply_contact(update, SimpleNamespace())
-
-        set_contact.assert_not_awaited()
-        update.message.reply_text.assert_awaited_once_with("Set your filters first with /search.")
-
 
 class BotScheduledScanTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduled_scan_limits_concurrent_users(self):

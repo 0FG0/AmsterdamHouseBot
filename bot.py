@@ -13,7 +13,6 @@ from telegram.ext import (
 
 import config
 import db
-from funda_autoreply import close_browser as close_funda_autoreply_browser
 from kamernet_autoreply import close_browser as close_kamernet_autoreply_browser
 from scanner import (
     GENERAL_SOURCES,
@@ -54,7 +53,6 @@ def create_application() -> Application:
     async def _post_shutdown(app: Application) -> None:
         await RoofzScraper.close_browser()
         await close_kamernet_autoreply_browser()
-        await close_funda_autoreply_browser()
         await close_shared_clients()
         await db.close_db()
         logger.info("Scraper and database resources closed.")
@@ -76,13 +74,6 @@ def create_application() -> Application:
     app.add_handler(CommandHandler("autoreply_off", cmd_autoreply_off))
     app.add_handler(CommandHandler("autoreply_status", cmd_autoreply_status))
     app.add_handler(CommandHandler("autoreply_template", cmd_autoreply_template))
-    app.add_handler(CommandHandler("funda_autoreply_on", cmd_funda_autoreply_on))
-    app.add_handler(CommandHandler("funda_autoreply_off", cmd_funda_autoreply_off))
-    app.add_handler(CommandHandler("funda_autoreply_manual_on", cmd_funda_autoreply_manual_on))
-    app.add_handler(CommandHandler("funda_autoreply_manual_off", cmd_funda_autoreply_manual_off))
-    app.add_handler(CommandHandler("funda_autoreply_status", cmd_funda_autoreply_status))
-    app.add_handler(CommandHandler("funda_autoreply_template", cmd_funda_autoreply_template))
-    app.add_handler(CommandHandler("funda_autoreply_contact", cmd_funda_autoreply_contact))
     app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CommandHandler("clear", cmd_clear))
 
@@ -474,163 +465,6 @@ async def cmd_autoreply_template(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text("Kamernet auto-reply template saved.")
 
 
-async def cmd_funda_autoreply_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _ensure_authorized(update):
-        return
-
-    chat_id = update.effective_chat.id
-    user_filters = await db.get_filters(chat_id)
-    if not user_filters:
-        await update.message.reply_text("Set your filters first with /search.")
-        return
-    if user_filters.get("setup_in_progress"):
-        await update.message.reply_text("Finish or cancel /search before enabling Funda auto-reply.")
-        return
-    if not _funda_autoreply_contact_complete(user_filters):
-        await update.message.reply_text(
-            "Set Funda contact details first:\n"
-            "/funda_autoreply_contact email@example.com; First name; Last name; +31612345678"
-        )
-        return
-
-    await db.set_funda_autoreply_enabled(chat_id, True)
-    if _funda_autoreply_manual_approval_enabled(user_filters):
-        await update.message.reply_text(
-            "Funda auto-reply enabled in manual approval mode. I will send draft contact messages for new matching Funda listings."
-        )
-    else:
-        await update.message.reply_text(
-            "Funda auto-reply enabled. I will automatically submit the contact form for new Funda listings that match your filters."
-        )
-
-
-async def cmd_funda_autoreply_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _ensure_authorized(update):
-        return
-
-    if await _require_saved_filters(update) is None:
-        return
-
-    await db.set_funda_autoreply_enabled(update.effective_chat.id, False)
-    await update.message.reply_text("Funda auto-reply disabled.")
-
-
-async def cmd_funda_autoreply_manual_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _ensure_authorized(update):
-        return
-
-    if await _require_saved_filters(update) is None:
-        return
-
-    await db.set_funda_autoreply_manual_approval(update.effective_chat.id, True)
-    await update.message.reply_text(
-        "Funda manual approval enabled. I will send draft contact messages to Telegram instead of submitting forms."
-    )
-
-
-async def cmd_funda_autoreply_manual_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _ensure_authorized(update):
-        return
-
-    if await _require_saved_filters(update) is None:
-        return
-
-    await db.set_funda_autoreply_manual_approval(update.effective_chat.id, False)
-    await update.message.reply_text("Funda manual approval disabled. Funda auto-reply will submit forms when enabled.")
-
-
-async def cmd_funda_autoreply_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _ensure_authorized(update):
-        return
-
-    chat_id = update.effective_chat.id
-    user_filters = await db.get_filters(chat_id)
-    if not user_filters:
-        await update.message.reply_text("No filters configured. Use /search.")
-        return
-
-    stats = await db.get_funda_autoreply_stats(chat_id)
-    template = _funda_autoreply_template(user_filters)
-    status = "Enabled" if user_filters.get("funda_autoreply_enabled") else "Disabled"
-    mode = "Manual approval" if _funda_autoreply_manual_approval_enabled(user_filters) else "Automatic submit"
-    contact_status = "Configured" if _funda_autoreply_contact_complete(user_filters) else "Missing"
-    await update.message.reply_text(
-        "Funda auto-reply:\n"
-        f"Status: {status}\n"
-        f"Mode: {mode}\n"
-        f"Contact details: {contact_status}\n"
-        f"Sent: {stats.get('sent', 0)}\n"
-        f"Manual review: {stats.get('manual_review', 0)}\n"
-        f"Unconfirmed: {stats.get('sent_unconfirmed', 0) + stats.get('submit_unknown', 0)}\n"
-        f"Failed: {sum(count for key, count in stats.items() if key not in {'sent', 'sent_unconfirmed', 'submit_unknown', 'dry_run', 'manual_review'})}\n"
-        f"Dry runs: {stats.get('dry_run', 0)}\n\n"
-        f"Template:\n{template}"
-    )
-
-
-async def cmd_funda_autoreply_template(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _ensure_authorized(update):
-        return
-
-    text = update.message.text or ""
-    parts = text.split(maxsplit=1)
-    chat_id = update.effective_chat.id
-    if len(parts) == 1:
-        user_filters = await db.get_filters(chat_id)
-        template = _funda_autoreply_template(user_filters or {})
-        await update.message.reply_text(
-            "Current Funda auto-reply template:\n"
-            f"{template}\n\n"
-            "Set a new one with:\n"
-            "/funda_autoreply_template Hello, I am interested in this listing..."
-        )
-        return
-
-    template = parts[1].strip()
-    if not template:
-        await update.message.reply_text("Please include the template text after /funda_autoreply_template.")
-        return
-
-    if await _require_saved_filters(update) is None:
-        return
-
-    await db.set_funda_autoreply_template(chat_id, template)
-    await update.message.reply_text("Funda auto-reply template saved.")
-
-
-async def cmd_funda_autoreply_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _ensure_authorized(update):
-        return
-
-    text = update.message.text or ""
-    parts = text.split(maxsplit=1)
-    chat_id = update.effective_chat.id
-    if len(parts) == 1:
-        user_filters = await db.get_filters(chat_id)
-        status = "configured" if _funda_autoreply_contact_complete(user_filters or {}) else "missing"
-        await update.message.reply_text(
-            f"Funda contact details are {status}.\n\n"
-            "Set them with:\n"
-            "/funda_autoreply_contact email@example.com; First name; Last name; +31612345678"
-        )
-        return
-
-    contact = _parse_funda_autoreply_contact(parts[1])
-    if contact is None:
-        await update.message.reply_text(
-            "Use this format:\n"
-            "/funda_autoreply_contact email@example.com; First name; Last name; +31612345678"
-        )
-        return
-
-    if await _require_saved_filters(update) is None:
-        return
-
-    email, first_name, last_name, phone = contact
-    await db.set_funda_autoreply_contact(chat_id, email, first_name, last_name, phone)
-    await update.message.reply_text("Funda contact details saved.")
-
-
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _ensure_authorized(update):
         return
@@ -777,11 +611,6 @@ def _format_filters(user_filters: dict) -> str:
     if not user_filters.get("setup_in_progress"):
         status_text = "Active" if user_filters["active"] else "Paused"
     autoreply_status = "Enabled" if user_filters.get("kamernet_autoreply_enabled") else "Disabled"
-    if user_filters.get("funda_autoreply_enabled"):
-        funda_mode = "manual approval" if _funda_autoreply_manual_approval_enabled(user_filters) else "automatic"
-        funda_autoreply_status = f"Enabled ({funda_mode})"
-    else:
-        funda_autoreply_status = "Disabled"
     return (
         "Active filters:\n"
         f"City: {user_filters['city']}\n"
@@ -791,8 +620,7 @@ def _format_filters(user_filters: dict) -> str:
         f"Minimum bedrooms/rooms: {bedrooms_text}\n"
         f"Minimum size: {size_text}\n"
         f"Status: {status_text}\n"
-        f"Kamernet auto-reply: {autoreply_status}\n"
-        f"Funda auto-reply: {funda_autoreply_status}"
+        f"Kamernet auto-reply: {autoreply_status}"
     )
 
 
@@ -810,13 +638,6 @@ def _format_command_help() -> str:
         "/autoreply_off - disable Kamernet auto-reply\n"
         "/autoreply_status - show Kamernet auto-reply state\n"
         "/autoreply_template - show or set the Kamernet reply text\n"
-        "/funda_autoreply_on - automatically submit Funda contact forms for new matches\n"
-        "/funda_autoreply_off - disable Funda auto-reply\n"
-        "/funda_autoreply_manual_on - send Funda drafts to Telegram instead of submitting\n"
-        "/funda_autoreply_manual_off - submit Funda forms automatically when enabled\n"
-        "/funda_autoreply_status - show Funda auto-reply state\n"
-        "/funda_autoreply_template - show or set the Funda reply text\n"
-        "/funda_autoreply_contact - show or set Funda form contact details\n"
         "/pause - pause notifications\n"
         "/resume - resume notifications\n"
         "/clear - clear sent/seen listings\n"
@@ -834,39 +655,6 @@ def _kamernet_autoreply_template(user_filters: dict) -> str:
         user_filters.get("kamernet_autoreply_template")
         or config.KAMERNET_AUTOREPLY_DEFAULT_TEMPLATE
     ).strip()
-
-
-def _funda_autoreply_template(user_filters: dict) -> str:
-    return (
-        user_filters.get("funda_autoreply_template")
-        or config.FUNDA_AUTOREPLY_DEFAULT_TEMPLATE
-    ).strip()
-
-
-def _funda_autoreply_contact_complete(user_filters: dict) -> bool:
-    values = (
-        user_filters.get("funda_autoreply_email") or config.FUNDA_AUTOREPLY_EMAIL,
-        user_filters.get("funda_autoreply_first_name") or config.FUNDA_AUTOREPLY_FIRST_NAME,
-        user_filters.get("funda_autoreply_last_name") or config.FUNDA_AUTOREPLY_LAST_NAME,
-        user_filters.get("funda_autoreply_phone") or config.FUNDA_AUTOREPLY_PHONE,
-    )
-    return all(str(value).strip() for value in values)
-
-
-def _funda_autoreply_manual_approval_enabled(user_filters: dict | None) -> bool:
-    if not user_filters:
-        return config.FUNDA_AUTOREPLY_MANUAL_APPROVAL
-    return bool(user_filters.get("funda_autoreply_manual_approval")) or config.FUNDA_AUTOREPLY_MANUAL_APPROVAL
-
-
-def _parse_funda_autoreply_contact(text: str) -> tuple[str, str, str, str] | None:
-    parts = [part.strip() for part in text.split(";")]
-    if len(parts) != 4 or not all(parts):
-        return None
-    email, first_name, last_name, phone = parts
-    if "@" not in email or "." not in email:
-        return None
-    return email, first_name, last_name, phone
 
 
 def _format_interval(seconds: int) -> str:
