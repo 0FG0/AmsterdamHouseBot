@@ -18,6 +18,7 @@ ENV/
 
 # Environment variables (secrets)
 .env
+kamernet_storage_state.json
 
 # Database
 *.db

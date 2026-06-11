@@ -19,6 +19,7 @@ The bot stores user filters and already-seen listings in SQLite, so duplicate li
 - Checks both the Amsterdam Pararius search page and Pararius' public newest-rentals feed
 - Lets each Telegram user save their own Kamernet property types, rent, bedroom/room, and surface-area filters
 - Sends new listings directly in Telegram
+- Can automatically reply to new matching Kamernet and Funda listings when explicitly enabled
 - Supports an on-demand scan with `/test`
 
 ## Prerequisites
@@ -72,6 +73,24 @@ Create a `.env` file in the project root with the following content:
 TELEGRAM_TOKEN=123456789:replace-with-your-real-token
 FAST_POLL_INTERVAL_SECONDS=60
 SCRAPER_TIMEOUT_SECONDS=45
+KAMERNET_AUTOREPLY_TIMEOUT_SECONDS=45
+KAMERNET_AUTOREPLY_MAX_PER_SCAN=2
+KAMERNET_AUTOREPLY_STORAGE_STATE_PATH=
+KAMERNET_AUTOREPLY_EMAIL=
+KAMERNET_AUTOREPLY_PASSWORD=
+KAMERNET_AUTOREPLY_HEADLESS=true
+KAMERNET_AUTOREPLY_DRY_RUN=false
+FUNDA_AUTOREPLY_TIMEOUT_SECONDS=45
+FUNDA_AUTOREPLY_MAX_PER_SCAN=2
+FUNDA_AUTOREPLY_MAX_ATTEMPTS_PER_LISTING=3
+FUNDA_AUTOREPLY_RETRY_COOLDOWN_SECONDS=3600
+FUNDA_AUTOREPLY_MANUAL_APPROVAL=false
+FUNDA_AUTOREPLY_HEADLESS=true
+FUNDA_AUTOREPLY_DRY_RUN=false
+FUNDA_AUTOREPLY_EMAIL=
+FUNDA_AUTOREPLY_FIRST_NAME=
+FUNDA_AUTOREPLY_LAST_NAME=
+FUNDA_AUTOREPLY_PHONE=
 PARARIUS_SCRAPER_TIMEOUT_SECONDS=20
 FUNDA_SCRAPER_TIMEOUT_SECONDS=25
 FUNDA_PYFUNDA_TIMEOUT_SECONDS=12
@@ -95,6 +114,24 @@ Environment variables:
 - `PARARIUS_POLL_INTERVAL_SECONDS`: optional, legacy fallback for `FAST_POLL_INTERVAL_SECONDS`
 - `ROOFZ_POLL_INTERVAL_SECONDS`: deprecated; Roofz now uses the same fast interval as every other enabled platform
 - `SCRAPER_TIMEOUT_SECONDS`: optional, timeout for general scrapers, defaults to `45`
+- `KAMERNET_AUTOREPLY_TIMEOUT_SECONDS`: optional, timeout for Kamernet reply browser actions, defaults to `45`
+- `KAMERNET_AUTOREPLY_MAX_PER_SCAN`: optional, max automatic Kamernet replies per scan per user, defaults to `2`
+- `KAMERNET_AUTOREPLY_STORAGE_STATE_PATH`: optional, Playwright login-session file for Kamernet. If unset, it defaults to `kamernet_storage_state.json` locally, or next to `DB_PATH` when `DB_PATH` includes a directory.
+- `KAMERNET_AUTOREPLY_EMAIL`: optional, Kamernet email used to log in if no valid storage state is available
+- `KAMERNET_AUTOREPLY_PASSWORD`: optional, Kamernet password used with `KAMERNET_AUTOREPLY_EMAIL`
+- `KAMERNET_AUTOREPLY_HEADLESS`: optional, set to `false` to show the browser while debugging, defaults to `true`
+- `KAMERNET_AUTOREPLY_DRY_RUN`: optional, records auto-reply attempts without submitting them, defaults to `false`
+- `FUNDA_AUTOREPLY_TIMEOUT_SECONDS`: optional, timeout for Funda contact-form browser actions, defaults to `45`
+- `FUNDA_AUTOREPLY_MAX_PER_SCAN`: optional, max automatic Funda contact forms per scan per user, defaults to `2`
+- `FUNDA_AUTOREPLY_MAX_ATTEMPTS_PER_LISTING`: optional, max Funda auto-reply attempts for retryable failures per listing, defaults to `3`
+- `FUNDA_AUTOREPLY_RETRY_COOLDOWN_SECONDS`: optional, delay before retrying retryable Funda failures, defaults to `3600`
+- `FUNDA_AUTOREPLY_MANUAL_APPROVAL`: optional, global default that sends Funda draft messages to Telegram instead of submitting forms, defaults to `false`
+- `FUNDA_AUTOREPLY_HEADLESS`: optional, set to `false` to show the browser while debugging, defaults to `true`
+- `FUNDA_AUTOREPLY_DRY_RUN`: optional, records Funda auto-reply attempts without submitting them, defaults to `false`
+- `FUNDA_AUTOREPLY_EMAIL`: optional default email for Funda contact forms
+- `FUNDA_AUTOREPLY_FIRST_NAME`: optional default first name for Funda contact forms
+- `FUNDA_AUTOREPLY_LAST_NAME`: optional default last name for Funda contact forms
+- `FUNDA_AUTOREPLY_PHONE`: optional default phone number for Funda contact forms
 - `PARARIUS_SCRAPER_TIMEOUT_SECONDS`: optional, timeout for Pararius, defaults to `20`
 - `FUNDA_SCRAPER_TIMEOUT_SECONDS`: optional, outer timeout for Funda scans, defaults to `25`
 - `FUNDA_PYFUNDA_TIMEOUT_SECONDS`: optional, timeout passed to `pyfunda`, defaults to `12`
@@ -144,6 +181,17 @@ After that, the scheduled scanner will keep running in the background while the 
 - `/search` - save or update filters
 - `/filters` - show current filters
 - `/test` - run a scan immediately
+- `/autoreply_on` - automatically reply to new matching Kamernet listings
+- `/autoreply_off` - disable Kamernet auto-reply
+- `/autoreply_status` - show Kamernet auto-reply state and attempt counts
+- `/autoreply_template` - show or set the Kamernet reply text
+- `/funda_autoreply_on` - automatically submit Funda contact forms for new matching listings
+- `/funda_autoreply_off` - disable Funda auto-reply
+- `/funda_autoreply_manual_on` - send Funda drafts to Telegram instead of submitting forms
+- `/funda_autoreply_manual_off` - submit Funda forms automatically when auto-reply is enabled
+- `/funda_autoreply_status` - show Funda auto-reply state and attempt counts
+- `/funda_autoreply_template` - show or set the Funda reply text
+- `/funda_autoreply_contact` - show or set Funda form contact details
 - `/pause` - pause notifications
 - `/resume` - resume notifications
 - `/clear` - clear the seen listings database
@@ -155,6 +203,48 @@ After that, the scheduled scanner will keep running in the background while the 
 - Max rent: number in EUR, or `0` for no limit
 - Minimum bedrooms/rooms: number, or `0` for no minimum
 - Minimum size: number in m2, or `0` for no minimum
+
+## Kamernet Auto-Reply
+
+Kamernet auto-reply is disabled by default and only runs after `/autoreply_on`.
+
+The reply loop only fires for listings that already passed your saved filters and were deduplicated as new for your Telegram user. It also keeps a separate `kamernet_auto_replies` table so the same listing is not auto-replied twice.
+
+Set your message with:
+
+```text
+/autoreply_template Hello, I am interested in this place and would like to schedule a viewing. Kind regards
+```
+
+Optional placeholders are available in the template: `{title}`, `{price}`, `{address}`, `{url}`, `{city}`, `{rooms}`, and `{size}`.
+
+The auto-reply browser needs a normal logged-in Kamernet session. You can either provide `KAMERNET_AUTOREPLY_EMAIL` and `KAMERNET_AUTOREPLY_PASSWORD` in `.env`, or point `KAMERNET_AUTOREPLY_STORAGE_STATE_PATH` at an existing Playwright storage-state file. On the VPS, leave `KAMERNET_AUTOREPLY_STORAGE_STATE_PATH` unset unless you need a custom path, so the saved session lives beside the production database and survives deploys. If Kamernet asks for human verification, login, or payment/premium access, the bot stops that reply attempt and sends a Telegram failure notice instead of trying to bypass it.
+
+## Funda Auto-Reply
+
+Funda auto-reply is disabled by default and only runs after `/funda_autoreply_on`.
+
+The reply loop only fires for Funda listings that already passed your saved filters and were deduplicated as new for your Telegram user. It also keeps a separate `funda_auto_replies` table so the same listing is not contacted twice.
+
+Set your contact details once:
+
+```text
+/funda_autoreply_contact email@example.com; First name; Last name; +31612345678
+```
+
+Set your message with:
+
+```text
+/funda_autoreply_template Hello, I am interested in this rental listing and would like to schedule a viewing. Kind regards
+```
+
+Optional placeholders are available in the template: `{title}`, `{price}`, `{address}`, `{url}`, `{city}`, `{rooms}`, and `{size}`.
+
+The Funda browser scopes its selectors to the detected contact form, fills the public contact form fields for message, email, first name, last name, and phone number, then clicks `Verstuur`. It only records a contact as sent when Funda shows a confirmation. If the form shape changes, Funda asks for human verification, a required field cannot be found, or no confirmation appears after submit, the bot records a retryable failure and sends a Telegram notice.
+
+Retryable Funda failures are retried after `FUNDA_AUTOREPLY_RETRY_COOLDOWN_SECONDS`, up to `FUNDA_AUTOREPLY_MAX_ATTEMPTS_PER_LISTING`. Successful submissions and manual-review drafts are never retried.
+
+Use `/funda_autoreply_manual_on` to review drafts in Telegram before contacting Funda. In this mode the bot sends the listing, contact details, and filled message draft to Telegram and records the listing as `manual_review` without opening the browser or submitting the form.
 
 ## How the bot works
 
@@ -170,6 +260,8 @@ After that, the scheduled scanner will keep running in the background while the 
 |-- bot.py
 |-- config.py
 |-- db.py
+|-- funda_autoreply.py
+|-- kamernet_autoreply.py
 |-- main.py
 |-- pyproject.toml
 |-- scanner.py
@@ -233,7 +325,7 @@ If your SSH key is not the default key:
 
 The deploy script uploads the project to `/opt/amsterdam-house-bot`, uploads `.env` to `/etc/amsterdam-house-bot/bot.env`, creates `/var/lib/amsterdam-house-bot/listings.db` on first boot, installs dependencies, and starts a `systemd` service.
 
-The bootstrap pins `uv` to version `0.8.15`, verifies the downloaded binary checksum, installs Python `3.13.7`, and runs `uv sync --locked` so Python dependencies come from `uv.lock`. The local `.env`, `.venv`, `.git`, `__pycache__`, and local database files are excluded from the code archive. The `.env` file is uploaded separately as the service environment file. During VPS setup, any `DB_PATH=` value from `.env` is removed so production always uses `/var/lib/amsterdam-house-bot/listings.db` and deployments do not reset sent-listing history. If an older deploy created `/opt/amsterdam-house-bot/listings.db`, the bootstrap script migrates it before replacing app files.
+The bootstrap pins `uv` to version `0.8.15`, verifies the downloaded binary checksum, installs Python `3.13.7`, and runs `uv sync --locked` so Python dependencies come from `uv.lock`. The local `.env`, `.venv`, `.git`, `__pycache__`, local database files, and the default Kamernet storage-state file are excluded from the code archive. The `.env` file is uploaded separately as the service environment file. During VPS setup, any `DB_PATH=` value from `.env` is removed so production always uses `/var/lib/amsterdam-house-bot/listings.db` and deployments do not reset sent-listing history. If an older deploy created `/opt/amsterdam-house-bot/listings.db`, the bootstrap script migrates it before replacing app files.
 
 ### Manage The VPS Service
 

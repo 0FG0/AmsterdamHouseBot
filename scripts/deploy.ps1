@@ -31,7 +31,7 @@ function Copy-FilteredProject {
         ".mypy_cache",
         ".pytest_cache"
     )
-    $excludedFileNames = @(".env", "listings.db")
+    $excludedFileNames = @(".env", "listings.db", "kamernet_storage_state.json")
     $excludedExtensions = @(".db", ".sqlite3")
 
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null

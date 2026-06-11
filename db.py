@@ -13,6 +13,19 @@ _DB: aiosqlite.Connection | None = None
 _DB_CONNECT_LOCK = asyncio.Lock()
 _DB_OPERATION_LOCK = asyncio.Lock()
 
+_FUNDA_RETRYABLE_AUTOREPLY_STATUSES = {
+    "captcha",
+    "contact_missing",
+    "empty_message",
+    "error",
+    "form_not_found",
+    "playwright_missing",
+    "send_button_not_found",
+    "sent_unconfirmed",
+    "submit_failed",
+    "submit_unknown",
+}
+
 
 async def _get_db() -> aiosqlite.Connection:
     global _DB
@@ -85,17 +98,69 @@ async def init_db():
                 min_bedrooms  INTEGER DEFAULT 1,
                 min_size_m2   INTEGER DEFAULT 0,
                 kamernet_property_type TEXT DEFAULT 'any',
+                kamernet_autoreply_enabled INTEGER DEFAULT 0,
+                kamernet_autoreply_template TEXT DEFAULT '',
+                funda_autoreply_enabled INTEGER DEFAULT 0,
+                funda_autoreply_manual_approval INTEGER DEFAULT 0,
+                funda_autoreply_template TEXT DEFAULT '',
+                funda_autoreply_email TEXT DEFAULT '',
+                funda_autoreply_first_name TEXT DEFAULT '',
+                funda_autoreply_last_name TEXT DEFAULT '',
+                funda_autoreply_phone TEXT DEFAULT '',
                 neighborhoods TEXT    DEFAULT '[]',
                 active        INTEGER DEFAULT 1,
                 setup_in_progress INTEGER DEFAULT 0,
                 updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS kamernet_auto_replies (
+                chat_id     INTEGER NOT NULL,
+                listing_id  TEXT NOT NULL,
+                url         TEXT,
+                title       TEXT,
+                price       TEXT DEFAULT '',
+                address     TEXT DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'pending',
+                error       TEXT DEFAULT '',
+                attempt_count INTEGER DEFAULT 0,
+                last_attempt_at TIMESTAMP,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, listing_id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS funda_auto_replies (
+                chat_id     INTEGER NOT NULL,
+                listing_id  TEXT NOT NULL,
+                url         TEXT,
+                title       TEXT,
+                status      TEXT NOT NULL DEFAULT 'pending',
+                error       TEXT DEFAULT '',
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, listing_id)
+            )
+        """)
         await _ensure_column(db, "user_filters", "city", "TEXT DEFAULT 'Amsterdam'")
         await _ensure_column(db, "user_filters", "min_bedrooms", "INTEGER DEFAULT 1")
         await _ensure_column(db, "user_filters", "min_size_m2", "INTEGER DEFAULT 0")
         await _ensure_column(db, "user_filters", "kamernet_property_type", "TEXT DEFAULT 'any'")
+        await _ensure_column(db, "user_filters", "kamernet_autoreply_enabled", "INTEGER DEFAULT 0")
+        await _ensure_column(db, "user_filters", "kamernet_autoreply_template", "TEXT DEFAULT ''")
+        await _ensure_column(db, "user_filters", "funda_autoreply_enabled", "INTEGER DEFAULT 0")
+        await _ensure_column(db, "user_filters", "funda_autoreply_manual_approval", "INTEGER DEFAULT 0")
+        await _ensure_column(db, "user_filters", "funda_autoreply_template", "TEXT DEFAULT ''")
+        await _ensure_column(db, "user_filters", "funda_autoreply_email", "TEXT DEFAULT ''")
+        await _ensure_column(db, "user_filters", "funda_autoreply_first_name", "TEXT DEFAULT ''")
+        await _ensure_column(db, "user_filters", "funda_autoreply_last_name", "TEXT DEFAULT ''")
+        await _ensure_column(db, "user_filters", "funda_autoreply_phone", "TEXT DEFAULT ''")
         await _ensure_column(db, "user_filters", "setup_in_progress", "INTEGER DEFAULT 0")
+        await _ensure_column(db, "funda_auto_replies", "price", "TEXT DEFAULT ''")
+        await _ensure_column(db, "funda_auto_replies", "address", "TEXT DEFAULT ''")
+        await _ensure_column(db, "funda_auto_replies", "attempt_count", "INTEGER DEFAULT 0")
+        await _ensure_column(db, "funda_auto_replies", "last_attempt_at", "TIMESTAMP")
         await db.commit()
 
 
@@ -264,6 +329,15 @@ async def get_filters(chat_id: int) -> dict | None:
                 "min_bedrooms": min_bedrooms,
                 "min_size_m2": row["min_size_m2"] or 0,
                 "kamernet_property_type": serialize_kamernet_property_types(row["kamernet_property_type"]),
+                "kamernet_autoreply_enabled": bool(row["kamernet_autoreply_enabled"]),
+                "kamernet_autoreply_template": row["kamernet_autoreply_template"] or "",
+                "funda_autoreply_enabled": bool(row["funda_autoreply_enabled"]),
+                "funda_autoreply_manual_approval": bool(row["funda_autoreply_manual_approval"]),
+                "funda_autoreply_template": row["funda_autoreply_template"] or "",
+                "funda_autoreply_email": row["funda_autoreply_email"] or "",
+                "funda_autoreply_first_name": row["funda_autoreply_first_name"] or "",
+                "funda_autoreply_last_name": row["funda_autoreply_last_name"] or "",
+                "funda_autoreply_phone": row["funda_autoreply_phone"] or "",
                 "active": bool(row["active"]),
                 "setup_in_progress": bool(row["setup_in_progress"]),
             }
@@ -294,6 +368,310 @@ async def set_setup_in_progress(chat_id: int, setup_in_progress: bool) -> None:
         await db.commit()
 
 
+async def set_kamernet_autoreply_enabled(chat_id: int, enabled: bool) -> None:
+    async with _db_operation() as db:
+        await db.execute(
+            """
+            INSERT INTO user_filters (chat_id, kamernet_autoreply_enabled)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                kamernet_autoreply_enabled=excluded.kamernet_autoreply_enabled,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (chat_id, int(enabled)),
+        )
+        await db.commit()
+
+
+async def set_kamernet_autoreply_template(chat_id: int, template: str) -> None:
+    async with _db_operation() as db:
+        await db.execute(
+            """
+            INSERT INTO user_filters (chat_id, kamernet_autoreply_template)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                kamernet_autoreply_template=excluded.kamernet_autoreply_template,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (chat_id, template.strip()),
+        )
+        await db.commit()
+
+
+async def reserve_kamernet_auto_reply(
+    chat_id: int,
+    listing_id: str,
+    url: str = "",
+    title: str = "",
+) -> bool:
+    async with _db_operation() as db:
+        cursor = await db.execute(
+            """
+            INSERT OR IGNORE INTO kamernet_auto_replies (chat_id, listing_id, url, title)
+            VALUES (?, ?, ?, ?)
+            """,
+            (chat_id, listing_id, url, title),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def update_kamernet_auto_reply(
+    chat_id: int,
+    listing_id: str,
+    status: str,
+    error: str = "",
+) -> None:
+    async with _db_operation() as db:
+        await db.execute(
+            """
+            UPDATE kamernet_auto_replies
+            SET status=?, error=?, updated_at=CURRENT_TIMESTAMP
+            WHERE chat_id=? AND listing_id=?
+            """,
+            (status, error[:1000], chat_id, listing_id),
+        )
+        await db.commit()
+
+
+async def get_kamernet_autoreply_stats(chat_id: int) -> dict[str, int]:
+    async with _db_operation() as db:
+        async with db.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM kamernet_auto_replies
+            WHERE chat_id=?
+            GROUP BY status
+            """,
+            (chat_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+            return {row["status"]: row["count"] for row in rows}
+
+
+async def set_funda_autoreply_enabled(chat_id: int, enabled: bool) -> None:
+    async with _db_operation() as db:
+        await db.execute(
+            """
+            INSERT INTO user_filters (chat_id, funda_autoreply_enabled)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                funda_autoreply_enabled=excluded.funda_autoreply_enabled,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (chat_id, int(enabled)),
+        )
+        await db.commit()
+
+
+async def set_funda_autoreply_manual_approval(chat_id: int, enabled: bool) -> None:
+    async with _db_operation() as db:
+        await db.execute(
+            """
+            INSERT INTO user_filters (chat_id, funda_autoreply_manual_approval)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                funda_autoreply_manual_approval=excluded.funda_autoreply_manual_approval,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (chat_id, int(enabled)),
+        )
+        await db.commit()
+
+
+async def set_funda_autoreply_template(chat_id: int, template: str) -> None:
+    async with _db_operation() as db:
+        await db.execute(
+            """
+            INSERT INTO user_filters (chat_id, funda_autoreply_template)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                funda_autoreply_template=excluded.funda_autoreply_template,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (chat_id, template.strip()),
+        )
+        await db.commit()
+
+
+async def set_funda_autoreply_contact(
+    chat_id: int,
+    email: str,
+    first_name: str,
+    last_name: str,
+    phone: str,
+) -> None:
+    async with _db_operation() as db:
+        await db.execute(
+            """
+            INSERT INTO user_filters (
+                chat_id,
+                funda_autoreply_email,
+                funda_autoreply_first_name,
+                funda_autoreply_last_name,
+                funda_autoreply_phone
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                funda_autoreply_email=excluded.funda_autoreply_email,
+                funda_autoreply_first_name=excluded.funda_autoreply_first_name,
+                funda_autoreply_last_name=excluded.funda_autoreply_last_name,
+                funda_autoreply_phone=excluded.funda_autoreply_phone,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                chat_id,
+                email.strip(),
+                first_name.strip(),
+                last_name.strip(),
+                phone.strip(),
+            ),
+        )
+        await db.commit()
+
+
+async def reserve_funda_auto_reply(
+    chat_id: int,
+    listing_id: str,
+    url: str = "",
+    title: str = "",
+    price: str = "",
+    address: str = "",
+) -> bool:
+    async with _db_operation() as db:
+        cursor = await db.execute(
+            """
+            INSERT OR IGNORE INTO funda_auto_replies (
+                chat_id,
+                listing_id,
+                url,
+                title,
+                price,
+                address,
+                attempt_count,
+                last_attempt_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+            """,
+            (chat_id, listing_id, url, title, price, address),
+        )
+        if cursor.rowcount > 0:
+            await db.commit()
+            return True
+
+        max_attempts = _funda_autoreply_max_attempts()
+        cooldown_modifier = _funda_autoreply_retry_cooldown_modifier()
+        statuses = tuple(sorted(_FUNDA_RETRYABLE_AUTOREPLY_STATUSES))
+        placeholders = ",".join("?" for _ in statuses)
+        retry_cursor = await db.execute(
+            f"""
+            UPDATE funda_auto_replies
+            SET
+                url=?,
+                title=?,
+                price=?,
+                address=?,
+                status='pending',
+                error='',
+                attempt_count=COALESCE(attempt_count, 0) + 1,
+                last_attempt_at=CURRENT_TIMESTAMP,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE chat_id=?
+                AND listing_id=?
+                AND status IN ({placeholders})
+                AND COALESCE(attempt_count, 0) < ?
+                AND (
+                    updated_at IS NULL
+                    OR updated_at <= datetime('now', ?)
+                )
+            """,
+            (
+                url,
+                title,
+                price,
+                address,
+                chat_id,
+                listing_id,
+                *statuses,
+                max_attempts,
+                cooldown_modifier,
+            ),
+        )
+        await db.commit()
+        return retry_cursor.rowcount > 0
+
+
+async def update_funda_auto_reply(
+    chat_id: int,
+    listing_id: str,
+    status: str,
+    error: str = "",
+) -> None:
+    async with _db_operation() as db:
+        await db.execute(
+            """
+            UPDATE funda_auto_replies
+            SET status=?, error=?, updated_at=CURRENT_TIMESTAMP
+            WHERE chat_id=? AND listing_id=?
+            """,
+            (status, error[:1000], chat_id, listing_id),
+        )
+        await db.commit()
+
+
+async def get_funda_autoreply_stats(chat_id: int) -> dict[str, int]:
+    async with _db_operation() as db:
+        async with db.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM funda_auto_replies
+            WHERE chat_id=?
+            GROUP BY status
+            """,
+            (chat_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+            return {row["status"]: row["count"] for row in rows}
+
+
+async def get_retryable_funda_auto_replies(chat_id: int, limit: int) -> list[dict]:
+    if limit <= 0:
+        return []
+
+    statuses = tuple(sorted(_FUNDA_RETRYABLE_AUTOREPLY_STATUSES))
+    placeholders = ",".join("?" for _ in statuses)
+    max_attempts = _funda_autoreply_max_attempts()
+    cooldown_modifier = _funda_autoreply_retry_cooldown_modifier()
+
+    async with _db_operation() as db:
+        async with db.execute(
+            f"""
+            SELECT listing_id, url, title, price, address, status, error, attempt_count
+            FROM funda_auto_replies
+            WHERE chat_id=?
+                AND status IN ({placeholders})
+                AND COALESCE(attempt_count, 0) < ?
+                AND (
+                    updated_at IS NULL
+                    OR updated_at <= datetime('now', ?)
+                )
+            ORDER BY updated_at ASC
+            LIMIT ?
+            """,
+            (chat_id, *statuses, max_attempts, cooldown_modifier, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [dict(row) for row in rows]
+
+
+def _funda_autoreply_max_attempts() -> int:
+    return max(1, config.FUNDA_AUTOREPLY_MAX_ATTEMPTS_PER_LISTING)
+
+
+def _funda_autoreply_retry_cooldown_modifier() -> str:
+    return f"-{max(0, config.FUNDA_AUTOREPLY_RETRY_COOLDOWN_SECONDS)} seconds"
+
+
 async def clear_seen(source: str | None = None):
     async with _db_operation() as db:
         if source:
@@ -319,6 +697,15 @@ async def get_all_active_users() -> list[dict]:
                     "min_bedrooms": row["min_bedrooms"] if row["min_bedrooms"] is not None else row["min_rooms"],
                     "min_size_m2": row["min_size_m2"] or 0,
                     "kamernet_property_type": serialize_kamernet_property_types(row["kamernet_property_type"]),
+                    "kamernet_autoreply_enabled": bool(row["kamernet_autoreply_enabled"]),
+                    "kamernet_autoreply_template": row["kamernet_autoreply_template"] or "",
+                    "funda_autoreply_enabled": bool(row["funda_autoreply_enabled"]),
+                    "funda_autoreply_manual_approval": bool(row["funda_autoreply_manual_approval"]),
+                    "funda_autoreply_template": row["funda_autoreply_template"] or "",
+                    "funda_autoreply_email": row["funda_autoreply_email"] or "",
+                    "funda_autoreply_first_name": row["funda_autoreply_first_name"] or "",
+                    "funda_autoreply_last_name": row["funda_autoreply_last_name"] or "",
+                    "funda_autoreply_phone": row["funda_autoreply_phone"] or "",
                     "active": bool(row["active"]),
                     "setup_in_progress": bool(row["setup_in_progress"]),
                 }
