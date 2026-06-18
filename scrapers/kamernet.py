@@ -1,11 +1,14 @@
+import asyncio
 import json
 import logging
 import re
 from collections.abc import Iterable
 from urllib.parse import urlencode
 
+import httpx
 from bs4 import BeautifulSoup
 
+import config
 from .base import BaseScraper, Listing, parse_euro_amount, parse_first_int
 from .http_clients import get_httpx_client
 
@@ -70,11 +73,11 @@ class KamernetScraper(BaseScraper):
         super().__init__(city, max_price, min_bedrooms, min_size_m2)
         self.property_types = normalize_kamernet_property_types(property_type)
 
-    def _build_url(self) -> str:
+    def _build_url(self, page_no: int = 1) -> str:
         city_slug = self.city.lower().replace(" ", "-")
         params = {
             "radius": KAMERNET_SEARCH_RADIUS_KM,
-            "pageNo": 1,
+            "pageNo": max(1, int(page_no)),
         }
         search_categories = _search_categories_for_property_types(self.property_types)
         if search_categories:
@@ -87,30 +90,75 @@ class KamernetScraper(BaseScraper):
 
     async def scrape(self) -> list[Listing]:
         try:
-            client = await get_httpx_client(self.SOURCE, timeout=30, follow_redirects=True)
-            response = await client.get(self._build_url(), headers=_HEADERS)
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.text, "lxml")
-            listings = []
-            next_data = soup.select_one("script#__NEXT_DATA__")
-            if next_data and next_data.string:
-                listings = self._parse_next_data(json.loads(next_data.string))
-            if not listings:
-                listings = self._parse_html_fallback(soup)
-
+            pages = await self._fetch_pages()
+            listings = self._parse_pages(pages)
             raw_count = len(listings)
             listings = [listing for listing in listings if self._matches_filters(listing)]
             logger.info(
-                "Kamernet: %d raw listings, %d matching listings from %s",
+                "Kamernet: %d raw listings, %d matching listings from %d page(s); first page %s",
                 raw_count,
                 len(listings),
+                len(pages),
                 self._build_url(),
             )
             return listings
         except Exception as exc:
             logger.error("Kamernet scrape error: %s", exc)
             return []
+
+    async def _fetch_pages(self) -> list[tuple[str, str]]:
+        max_pages = max(1, config.KAMERNET_MAX_PAGES_PER_SCAN)
+        urls = [self._build_url(page_no) for page_no in range(1, max_pages + 1)]
+        client = await get_httpx_client(self.SOURCE, timeout=30, follow_redirects=True)
+
+        first_html = await self._fetch_page(client, urls[0])
+        rest_urls = urls[1:]
+        tasks = [
+            asyncio.create_task(self._fetch_page(client, url))
+            for url in rest_urls
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        pages = [(urls[0], first_html)]
+        for url, result in zip(rest_urls, results, strict=True):
+            if isinstance(result, Exception):
+                logger.warning("Kamernet page failed from %s: %s", url, result)
+                continue
+            pages.append((url, result))
+        return pages
+
+    async def _fetch_page(self, client: httpx.AsyncClient, url: str) -> str:
+        response = await client.get(url, headers=_HEADERS)
+        response.raise_for_status()
+        logger.info("Kamernet page fetched from %s", url)
+        return response.text
+
+    def _parse_pages(self, pages: list[tuple[str, str]]) -> list[Listing]:
+        listings: list[Listing] = []
+        seen_ids: set[str] = set()
+        raw_counts: dict[str, int] = {}
+
+        for url, html in pages:
+            page_listings = self._parse_html(html)
+            raw_counts[url] = len(page_listings)
+            for listing in page_listings:
+                if listing.id in seen_ids:
+                    continue
+                seen_ids.add(listing.id)
+                listings.append(listing)
+
+        logger.info("Kamernet raw listings by page: %s", raw_counts)
+        return listings
+
+    def _parse_html(self, html: str) -> list[Listing]:
+        soup = BeautifulSoup(html, "lxml")
+        listings = []
+        next_data = soup.select_one("script#__NEXT_DATA__")
+        if next_data and next_data.string:
+            listings = self._parse_next_data(json.loads(next_data.string))
+        if not listings:
+            listings = self._parse_html_fallback(soup)
+        return listings
 
     def _parse_next_data(self, data: dict) -> list[Listing]:
         page_props = data.get("props", {}).get("pageProps", {})

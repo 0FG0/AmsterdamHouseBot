@@ -75,6 +75,7 @@ FAST_POLL_INTERVAL_SECONDS=60
 SCRAPER_TIMEOUT_SECONDS=45
 KAMERNET_AUTOREPLY_TIMEOUT_SECONDS=45
 KAMERNET_AUTOREPLY_MAX_PER_SCAN=2
+KAMERNET_MAX_PAGES_PER_SCAN=3
 KAMERNET_AUTOREPLY_STORAGE_STATE_PATH=
 KAMERNET_AUTOREPLY_EMAIL=
 KAMERNET_AUTOREPLY_PASSWORD=
@@ -105,6 +106,7 @@ Environment variables:
 - `SCRAPER_TIMEOUT_SECONDS`: optional, timeout for general scrapers, defaults to `45`
 - `KAMERNET_AUTOREPLY_TIMEOUT_SECONDS`: optional, timeout for Kamernet reply browser actions, defaults to `45`
 - `KAMERNET_AUTOREPLY_MAX_PER_SCAN`: optional, max automatic Kamernet replies per scan per user, defaults to `2`
+- `KAMERNET_MAX_PAGES_PER_SCAN`: optional, max Kamernet search pages fetched per scan, defaults to `3`
 - `KAMERNET_AUTOREPLY_STORAGE_STATE_PATH`: optional, Playwright login-session file for Kamernet. If unset, it defaults to `kamernet_storage_state.json` locally, or next to `DB_PATH` when `DB_PATH` includes a directory.
 - `KAMERNET_AUTOREPLY_EMAIL`: optional, Kamernet email used to log in if no valid storage state is available
 - `KAMERNET_AUTOREPLY_PASSWORD`: optional, Kamernet password used with `KAMERNET_AUTOREPLY_EMAIL`

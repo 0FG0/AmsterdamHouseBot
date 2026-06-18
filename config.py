@@ -33,6 +33,7 @@ SCRAPER_TIMEOUT_SECONDS = int(os.getenv("SCRAPER_TIMEOUT_SECONDS", "45"))
 DB_PATH = os.getenv("DB_PATH", "listings.db")
 KAMERNET_AUTOREPLY_TIMEOUT_SECONDS = int(os.getenv("KAMERNET_AUTOREPLY_TIMEOUT_SECONDS", "45"))
 KAMERNET_AUTOREPLY_MAX_PER_SCAN = int(os.getenv("KAMERNET_AUTOREPLY_MAX_PER_SCAN", "2"))
+KAMERNET_MAX_PAGES_PER_SCAN = int(os.getenv("KAMERNET_MAX_PAGES_PER_SCAN", "3"))
 _DEFAULT_KAMERNET_AUTOREPLY_STORAGE_STATE_PATH = (
     os.path.join(os.path.dirname(DB_PATH), "kamernet_storage_state.json")
     if os.path.dirname(DB_PATH)
